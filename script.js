@@ -1,11 +1,10 @@
 // ============================================================
-// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v16, cu culoarea ochilor îmbunătățită)
+// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v17, corect)
 // ============================================================
-// Modificări:
-// - Adăugat conversia RGB->HSV pentru o clasificare mai precisă a culorii.
-// - Sampling de pixelii irisului folosind disc (nu bounding box).
-// - Clasificare separată pentru fiecare ochi și detectare heterocromie.
-// - Mediană robustă pentru culoare (reduce influența reflexiilor).
+// - Detecție urechi cu fallback pe întreaga imagine dacă
+//   landmark-urile de profil lipsesc.
+// - Culoarea ochilor folosește HSV + sampling disc + mediană.
+// - Normalizare white balance pentru culori robuste.
 // ============================================================
 
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
@@ -15,7 +14,7 @@ const MODEL_URL =
 const WASM_PATH =
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 
-// URL pentru OpenCV.js (opțional, doar pentru îmbunătățirea urechilor)
+// URL pentru OpenCV.js (opțional, pentru îmbunătățirea urechilor)
 const OPENCV_URL = "https://docs.opencv.org/4.8.0/opencv.js";
 
 let faceLandmarker = null;
@@ -531,21 +530,18 @@ function classifyFaceType(landmarks) {
     return { tip, raport: ratio.toFixed(2), latimePometi: cheekboneW.toFixed(2), latimeMaxilar: jawW.toFixed(2) };
 }
 
-// ---------- Ochi (ÎMBUNĂTĂȚIT) ----------
+// ---------- Ochi ----------
 function classifyEyes(landmarks, canvas, ctx, faceWidth, normalizer) {
     const rEyeW = distance(landmarks[LM.RIGHT_EYE_OUTER], landmarks[LM.RIGHT_EYE_INNER]);
     const lEyeW = distance(landmarks[LM.LEFT_EYE_OUTER], landmarks[LM.LEFT_EYE_INNER]);
-    const avgEyeW = (rEyeW + lEyeW) / 2;
-    const eyeRatio = avgEyeW / faceWidth;
+    const avgEyeW = (rEyeW + lEyeW) / 2, eyeRatio = avgEyeW / faceWidth;
     let marime;
     if (eyeRatio < 0.15) marime = "Mici";
     else if (eyeRatio > 0.21) marime = "Mari";
     else marime = "Mijlocii";
 
-    // Estimează raza irisului ca fracțiune din lățimea ochiului
     const irisRadiusR = rEyeW * 0.22;
     const irisRadiusL = lEyeW * 0.22;
-
     const irisCenterR = landmarks[LM.RIGHT_IRIS_CENTER];
     const irisCenterL = landmarks[LM.LEFT_IRIS_CENTER];
 
@@ -766,7 +762,7 @@ function classifyBeardAndMustache(landmarks, canvas, ctx, normalizer) {
 }
 
 // ============================================================
-// DETECȚIA URECHEI – CU FALLBACK GEOMETRIC
+// DETECȚIA URECHEI – CU FALLBACK GEOMETRIC ȘI CONTOUR
 // ============================================================
 function geometricEarEstimate(profileLandmarks, faceHeight) {
     const side = detectProfileSide(profileLandmarks);
@@ -802,8 +798,71 @@ function geometricEarEstimate(profileLandmarks, faceHeight) {
     return { forma, marime, lob: "Nedeterminat" };
 }
 
+// Detecție urechi fără landmark-uri (folosind OpenCV)
+async function detectEarsByContours(profileImageData) {
+    if (!window.cv || !opencvReady) return null;
+    const canvas = profileImageData.canvas;
+    let src = null, gray = null, edges = null, contours = null, hierarchy = null;
+    const extractedMats = [];
+    try {
+        src = cv.imread(canvas);
+        gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+        cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+        edges = new cv.Mat();
+        cv.Canny(gray, edges, 50, 150);
+        contours = new cv.MatVector();
+        hierarchy = new cv.Mat();
+        cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+        let bestContour = null;
+        let bestArea = 0;
+        for (let i = 0; i < contours.size(); i++) {
+            const contour = contours.get(i);
+            extractedMats.push(contour);
+            const area = cv.contourArea(contour);
+            if (area > bestArea && area > 500) {
+                const rect = cv.boundingRect(contour);
+                const ar = rect.height / rect.width;
+                // formă alungită, posibilă ureche
+                if (ar > 0.8 && ar < 3.5) {
+                    bestArea = area;
+                    bestContour = contour;
+                }
+            }
+        }
+
+        if (bestContour) {
+            const rect = cv.boundingRect(bestContour);
+            const aspectRatio = rect.height / rect.width;
+            const relativeHeight = rect.height / canvas.height;
+            let forma;
+            if (aspectRatio > 1.8) forma = "Dreptunghiulară";
+            else if (aspectRatio > 1.4) forma = "Ovală";
+            else if (aspectRatio > 1.0) forma = "Rotundă";
+            else forma = "Neregulată";
+            let marime;
+            if (relativeHeight < 0.15) marime = "Mici";
+            else if (relativeHeight > 0.25) marime = "Mari";
+            else marime = "Medii";
+            return { forma, marime, lob: "Nedeterminat" };
+        }
+        return null;
+    } catch (err) {
+        console.warn("Eroare la detectEarsByContours:", err);
+        return null;
+    } finally {
+        for (const mat of extractedMats) mat.delete();
+        if (src) src.delete();
+        if (gray) gray.delete();
+        if (edges) edges.delete();
+        if (contours) contours.delete();
+        if (hierarchy) hierarchy.delete();
+    }
+}
+
 async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHeight) {
-    // Dacă OpenCV este disponibil, încercăm detecția pe contururi
+    // Întâi încercăm cu landmark-uri și OpenCV
     if (window.cv && opencvReady) {
         let src = null, gray = null, edges = null, contours = null, hierarchy = null;
         const extractedMats = [];
@@ -868,13 +927,12 @@ async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHei
                         if (relativeHeight < 0.22) marime = "Mici";
                         else if (relativeHeight > 0.32) marime = "Mari";
                         else marime = "Medii";
-                        // Lobul rămâne nedeterminat; nu putem fi siguri
                         return { forma, marime, lob: "Nedeterminat" };
                     }
                 }
             }
         } catch (err) {
-            console.warn("Eroare la detecția OpenCV a urechii, folosim fallback geometric:", err);
+            console.warn("Eroare la detecția OpenCV a urechii, folosim fallback:", err);
         } finally {
             for (const mat of extractedMats) mat.delete();
             if (src) src.delete();
@@ -884,8 +942,17 @@ async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHei
             if (hierarchy) hierarchy.delete();
         }
     }
-    // Fallback geometric dacă OpenCV nu este disponibil sau conturul nu a fost găsit
-    return geometricEarEstimate(profileLandmarks, faceHeight);
+
+    // Fallback geometric dacă avem landmark-uri
+    if (profileLandmarks) {
+        return geometricEarEstimate(profileLandmarks, faceHeight);
+    }
+
+    // Ultim fallback: contur pe toată imaginea
+    const contourResult = await detectEarsByContours(profileImageData);
+    if (contourResult) return contourResult;
+
+    return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
 }
 
 // ============================================================
@@ -925,7 +992,9 @@ async function runAnalysis() {
             try {
                 profilProc = await processImage(profilFile);
                 profilLandmarks = await extractLandmarks(profilProc);
-                if (!profilLandmarks) console.warn("Nu s-au detectat landmark-uri în poza de profil. Folosim doar analiza frontală.");
+                if (!profilLandmarks) {
+                    console.warn("Nu s-au detectat landmark-uri în poza de profil. Se va încerca detecția urechilor doar cu OpenCV.");
+                }
             } catch (profilErr) { console.warn("Eroare la procesarea pozei de profil:", profilErr); }
         }
 
@@ -937,7 +1006,7 @@ async function runAnalysis() {
 
         // Detecția urechilor (doar dacă avem profil)
         let urechi = { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
-        if (profilProc && profilLandmarks) {
+        if (profilProc) {
             try {
                 urechi = await detectEars(profilProc, profilLandmarks, faceWidth, faceHeight);
             } catch (earErr) { console.warn("Eroare la detecția urechii:", earErr); }
