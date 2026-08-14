@@ -1,23 +1,12 @@
 // ============================================================
-// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v11, debugging)
+// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v12)
 // ============================================================
-// Modificări față de v10:
-// - FIX critic: currentResults se resetează la începutul fiecărei
-//   analize, ca să nu mai poată fi salvate/exportate rezultate
-//   vechi (atribuite altei poze) după o analiză eșuată.
-// - FIX: lobul urechii rămâne mereu "Nedeterminat", inclusiv pe
-//   ramura OpenCV (înainte contrazicea propriul design: dădea o
-//   presupunere nesigură fără avertismentul aferent în UI).
-// - FIX: loadOpenCV() nu mai injectează <script> duplicat la
-//   fiecare încercare eșuată — promisiunea de încărcare e cache-uită.
-// - FIX: cv.Mat-urile din detectEars/estimateAge sunt eliberate în
-//   try/finally, nu mai există leak de memorie WASM la erori.
-// - FIX: ramură moartă (unreachable) în classifyColor — verificarea
-//   pentru "Cărunt" era umbrită complet de cea pentru "Blond".
-// - FIX: purgeImageData nu mai setează img.src = "" (poate declanșa
-//   o cerere către URL-ul curent al paginii) — folosește removeAttribute.
-// - FIX: gol de clasificare în classifyFaceType pentru foreheadRatio
-//   între 0.80 și 0.85 (cădea implicit în "Romboidă").
+// Modificări față de v11:
+// - FIX: Fallback-ul geometric pentru urechi nu mai returnează
+//   „Nedeterminat” atunci când lățimea estimată din landmark-uri
+//   este aproape zero (situație normală în poza de profil).
+//   Acum se folosește o lățime minimă proporțională cu înălțimea
+//   feței, permițând estimarea formei și mărimii urechii.
 // ============================================================
 
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
@@ -637,7 +626,7 @@ function classifyBeardAndMustache(landmarks, canvas, ctx) {
 }
 
 // ============================================================
-// DETECȚIA URECHEI – CU FALLBACK GEOMETRIC
+// DETECȚIA URECHEI – CU FALLBACK GEOMETRIC (v12)
 // ============================================================
 // NOTĂ: lobul urechii rămâne întotdeauna "Nedeterminat", indiferent
 // de ramură (geometrică sau OpenCV) — nu poate fi dedus fiabil doar
@@ -649,13 +638,21 @@ function geometricEarEstimate(profileLandmarks, faceHeight) {
     if (!temple || !jaw || !cheekbone) {
         return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
     }
-    // Estimare geometrică simplă: urechea se află între tâmplă și maxilar,
-    // înălțimea aproximată din diferența de Y, lățimea din diferența de X.
+
     const height = Math.abs(temple.y - jaw.y) * 2.2;
-    const width = Math.abs(temple.x - jaw.x) * 1.8;
+    let width = Math.abs(temple.x - jaw.x) * 1.8;
+
+    // FIX (v12): Într-o poză de profil corectă, temple.x și jaw.x pot fi
+    // aproape egale, rezultând o lățime aproape zero care ducea la
+    // „Nedeterminat”. Folosim o lățime minimă estimată din înălțimea feței.
+    if (width < 0.02) {
+        width = faceHeight * 0.15; // ≈ lățimea medie a urechii raportată la față
+    }
+
     if (height < 0.01 || width < 0.01) {
         return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
     }
+
     const aspectRatio = height / width;
     const relativeHeight = height / faceHeight;
 
