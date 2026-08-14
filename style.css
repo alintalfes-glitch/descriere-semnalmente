@@ -1,7 +1,9 @@
 /* ============================================================
    STILURI APLICAȚIE ANALIZĂ FACIALĂ – style.css
+   Versiune completă, cu utilitare de accesibilitate.
    ============================================================ */
 
+/* ---------- Variabile globale ---------- */
 :root {
     --bg: #0f1117;
     --card-bg: #1a1d27;
@@ -18,6 +20,7 @@
     --transition: 0.2s ease;
 }
 
+/* ---------- Reset de bază ---------- */
 * {
     margin: 0;
     padding: 0;
@@ -362,7 +365,6 @@ header p {
 
 /* ---------- Lista fișelor salvate ---------- */
 .saved-list {
-    margin-top: 20px;
     background: var(--card-bg);
     border: 1px solid var(--card-border);
     border-radius: var(--radius);
@@ -434,4 +436,17 @@ footer {
     to {
         transform: rotate(360deg);
     }
+}
+
+/* ---------- Utilitare de accesibilitate ---------- */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
 }
