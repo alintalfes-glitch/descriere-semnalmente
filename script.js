@@ -1,8 +1,23 @@
 // ============================================================
-// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js
+// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v2, corectat)
 // Modul ES, 100% client-side.
 // Folosește MediaPipe Face Landmarker pentru extragerea
 // a 468+ landmark-uri faciale.
+//
+// MODIFICĂRI FAȚĂ DE VERSIUNEA ANTERIOARĂ:
+// 1. Eliminată complet detecția automată a urechilor — MediaPipe
+//    Face Mesh NU are landmark-uri pe ureche; indicii folosiți
+//    anterior cădeau pe obraz/tâmplă și produceau rezultate false.
+//    Urechile sunt acum input 100% manual.
+// 2. Sampling de pixeli optimizat: un singur getImageData per
+//    regiune de interes (bounding box), în loc de zeci de apeluri
+//    getImageData(1x1) în buclă.
+// 3. Curățare mai riguroasă a datelor din memorie după analiză
+//    (src golit pe elementele Image, referințe globale eliberate).
+// 4. Avertisment explicit în UI când analiza nasului se bazează
+//    doar pe poza frontală (fără profil) — precizie redusă.
+// 5. Praguri de clasificare documentate ca fiind euristice,
+//    nu măsurători calibrate.
 // ============================================================
 
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
@@ -19,12 +34,11 @@ const WASM_PATH =
 // STARE GLOBALĂ
 // ============================================================
 let faceLandmarker = null;          // instanța MediaPipe
-let frontalImageData = null;        // { image, canvas, ctx }
-let profilImageData = null;         // { image, canvas, ctx }
 let currentResults = null;          // rezultatele curente (obiect)
 let objectUrls = [];                // URL-uri create pentru curățenie
 let frontalFile = null;             // fișierul frontal
 let profilFile = null;              // fișierul profil
+let noseUsedProfile = false;        // dacă analiza nasului s-a bazat pe profil
 
 // ============================================================
 // OPȚIUNI PENTRU DROPDOWN-URI ȘI CHECKBOX-URI
@@ -62,6 +76,7 @@ const OPTIONS = {
         "Fără mustață", "Subțire", "Groasă", "Dreaptă",
         "Cu colțurile ridicate", "Cu colțurile coborâte", "Nedeterminată"
     ],
+    // Urechile rămân doar ca opțiuni pentru input manual (fără detecție automată)
     urechiForma: ["Ovală", "Rotundă", "Dreptunghiulară", "Triunghiulară", "Neregulată", "Nedeterminată"],
     urechiMarime: ["Mici", "Medii", "Mari", "Nedeterminată"],
     urechiLob: ["Atașat", "Liber", "Nedeterminat"],
@@ -69,6 +84,10 @@ const OPTIONS = {
 
 // ============================================================
 // INDICI LANDMARK-URI MEDIAPIPE FACE MESH (esențiali)
+// NOTĂ: MediaPipe Face Mesh NU are landmark-uri pentru urechi.
+// Modelul acoperă doar: ovalul feței, sprâncene, ochi, iris,
+// nas, gură. Orice punct "de ureche" folosit anterior era de
+// fapt pe zona tâmplei/maxilarului și dădea rezultate greșite.
 // ============================================================
 const LM = {
     // Conturul feței
@@ -120,24 +139,13 @@ const LM = {
     LEFT_CHEEK_SKIN: 345,
     // Frunte piele (referință)
     FOREHEAD_SKIN: 8,
-    // Urechi
-    RIGHT_EAR_TOP: 93,
-    RIGHT_EAR_BOTTOM: 132,
-    RIGHT_EAR_LOBE: 136,
-    LEFT_EAR_TOP: 323,
-    LEFT_EAR_BOTTOM: 361,
-    LEFT_EAR_LOBE: 365,
 };
 
 // ============================================================
-// FUNCȚII UTILITARE
+// FUNCȚII UTILITARE GENERALE
 // ============================================================
 function distance(a, b) {
     return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
-}
-
-function midpoint(a, b) {
-    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
 
 function clamp(v, min, max) {
@@ -194,7 +202,7 @@ function rgbToHsl(r, g, b) {
 }
 
 function classifyColor(r, g, b) {
-    // Clasificare simplă a culorii pe baza HSL
+    // Clasificare simplă a culorii pe baza HSL. Euristică, nu calibrată.
     const { h, s, l } = rgbToHsl(r, g, b);
 
     if (l < 15) return "Negru";
@@ -210,6 +218,55 @@ function classifyColor(r, g, b) {
     if (h < 170) return "Șaten";
     if (h < 260) return "Negru";
     return "Negru";
+}
+
+// ------------------------------------------------------------
+// Sampling optimizat: un singur getImageData pe un bounding box
+// în jurul unui set de puncte normalizate (landmark-uri), apoi
+// citire directă din array-ul de pixeli (fără apeluri repetate
+// getImageData(1x1)).
+// ------------------------------------------------------------
+function samplePixelsAroundPoints(canvas, ctx, points, radiusPx = 3) {
+    if (!points || points.length === 0) return [];
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const pxPoints = points.map((p) => {
+        const px = clamp(Math.round(p.x * canvas.width), 0, canvas.width - 1);
+        const py = clamp(Math.round(p.y * canvas.height), 0, canvas.height - 1);
+        minX = Math.min(minX, px - radiusPx);
+        minY = Math.min(minY, py - radiusPx);
+        maxX = Math.max(maxX, px + radiusPx);
+        maxY = Math.max(maxY, py + radiusPx);
+        return { px, py };
+    });
+
+    minX = clamp(minX, 0, canvas.width - 1);
+    minY = clamp(minY, 0, canvas.height - 1);
+    maxX = clamp(maxX, 0, canvas.width - 1);
+    maxY = clamp(maxY, 0, canvas.height - 1);
+    const boxW = Math.max(1, maxX - minX + 1);
+    const boxH = Math.max(1, maxY - minY + 1);
+
+    // Un singur apel getImageData pentru toată zona.
+    const imageData = ctx.getImageData(minX, minY, boxW, boxH);
+    const data = imageData.data;
+
+    const samples = [];
+    for (const { px, py } of pxPoints) {
+        for (let dx = -radiusPx; dx <= radiusPx; dx++) {
+            for (let dy = -radiusPx; dy <= radiusPx; dy++) {
+                const x = clamp(px + dx, minX, maxX) - minX;
+                const y = clamp(py + dy, minY, maxY) - minY;
+                const idx = (y * boxW + x) * 4;
+                samples.push({ r: data[idx], g: data[idx + 1], b: data[idx + 2] });
+            }
+        }
+    }
+    return samples;
+}
+
+function luminance(c) {
+    return (c.r + c.g + c.b) / 3;
 }
 
 // ============================================================
@@ -277,14 +334,14 @@ function setupUploadZone(zoneId, fileInputId, previewId, removeBtnId, callback) 
     removeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         fileInput.value = "";
-        preview.src = "";
-        preview.classList.remove("visible");
-        removeBtn.classList.remove("visible");
         if (preview.src) {
             const url = preview.src;
             objectUrls = objectUrls.filter((u) => u !== url);
             URL.revokeObjectURL(url);
         }
+        preview.src = "";
+        preview.classList.remove("visible");
+        removeBtn.classList.remove("visible");
         callback(null, null);
     });
 
@@ -352,11 +409,11 @@ async function processImage(file) {
             const canvas = document.createElement("canvas");
             canvas.width = img.naturalWidth;
             canvas.height = img.naturalHeight;
-            const ctx = canvas.getContext("2d");
+            const ctx = canvas.getContext("2d", { willReadFrequently: true });
             ctx.drawImage(img, 0, 0);
-            resolve({ image: img, canvas, ctx });
+            resolve({ image: img, canvas, ctx, objectUrl: url });
         };
-        img.onerror = (err) => {
+        img.onerror = () => {
             reject(new Error("Nu s-a putut încărca imaginea."));
         };
         img.src = url;
@@ -369,7 +426,6 @@ async function extractLandmarks(imageData) {
         const result = await faceLandmarker.detect(imageData.image);
         if (result.faceLandmarks && result.faceLandmarks.length > 0) {
             const landmarks = result.faceLandmarks[0];
-            // Acceptăm atât 468 cât și 478 (cu iris)
             if (landmarks.length >= 468) {
                 return landmarks;
             }
@@ -382,12 +438,33 @@ async function extractLandmarks(imageData) {
     }
 }
 
-function clearCanvasData(imageData) {
-    if (imageData && imageData.canvas) {
-        const ctx = imageData.canvas.getContext("2d");
-        ctx.clearRect(0, 0, imageData.canvas.width, imageData.canvas.height);
-        imageData.canvas.width = 0;
-        imageData.canvas.height = 0;
+// ------------------------------------------------------------
+// Curățare riguroasă a datelor de imagine din memorie:
+// - golește canvas-ul și îi pune dimensiunea la 0
+// - golește src-ul elementului <img> (eliberează bitmap-ul decodat)
+// - revocă object URL-ul creat pentru el
+// Notă: acest lucru elimină referințele active pe care le
+// controlăm noi; timpul exact de eliberare RAM rămâne totuși
+// la discreția garbage collector-ului browserului.
+// ------------------------------------------------------------
+function purgeImageData(imageData) {
+    if (!imageData) return;
+    try {
+        if (imageData.canvas) {
+            const ctx = imageData.canvas.getContext("2d");
+            ctx && ctx.clearRect(0, 0, imageData.canvas.width, imageData.canvas.height);
+            imageData.canvas.width = 0;
+            imageData.canvas.height = 0;
+        }
+        if (imageData.image) {
+            imageData.image.src = "";
+        }
+        if (imageData.objectUrl) {
+            URL.revokeObjectURL(imageData.objectUrl);
+            objectUrls = objectUrls.filter((u) => u !== imageData.objectUrl);
+        }
+    } catch (err) {
+        console.warn("Curățare imagine: eroare minoră ignorată:", err);
     }
 }
 
@@ -479,30 +556,17 @@ function classifyEyes(landmarks, canvas, ctx, faceWidth) {
     else if (eyeRatio > 0.21) marime = "Mari";
     else marime = "Mijlocii";
 
-    // Culoare iris – sampling din zona irisului
+    // Culoare iris – sampling optimizat (un singur getImageData pe zonă)
     let culoare = "Nedeterminată";
-    const samples = [];
-    const irisPoints = [LM.RIGHT_IRIS_CENTER, LM.LEFT_IRIS_CENTER];
-    for (const pt of irisPoints) {
-        if (pt < landmarks.length) {
-            const l = landmarks[pt];
-            const cx = Math.round(l.x * canvas.width);
-            const cy = Math.round(l.y * canvas.height);
-            // Sampling într-o zonă mică 5x5
-            for (let dx = -2; dx <= 2; dx++) {
-                for (let dy = -2; dy <= 2; dy++) {
-                    const px = clamp(cx + dx, 0, canvas.width - 1);
-                    const py = clamp(cy + dy, 0, canvas.height - 1);
-                    const pixel = ctx.getImageData(px, py, 1, 1).data;
-                    samples.push({ r: pixel[0], g: pixel[1], b: pixel[2] });
-                }
-            }
-        }
-    }
+    const irisPoints = [LM.RIGHT_IRIS_CENTER, LM.LEFT_IRIS_CENTER]
+        .filter((idx) => idx < landmarks.length)
+        .map((idx) => landmarks[idx]);
+
+    const samples = samplePixelsAroundPoints(canvas, ctx, irisPoints, 2);
     if (samples.length > 0) {
         const avg = averageColor(samples);
         culoare = classifyColor(avg.r, avg.g, avg.b);
-        // Mapare aproximativă
+        // Mapare aproximativă spre categoriile de culoare ochi
         if (culoare === "Șaten") culoare = "Căprui";
         else if (culoare === "Blond") culoare = "Albaștri";
         else if (culoare === "Roșcat") culoare = "Căprui";
@@ -546,31 +610,22 @@ function classifyChin(landmarks, faceWidth, canvas, ctx) {
 
     // Detectare gropiță – variație de luminozitate în centrul bărbiei
     if (canvas && ctx && LM.CHIN_CREASE < landmarks.length) {
-        const c = landmarks[LM.CHIN_CREASE];
-        const cx = Math.round(c.x * canvas.width);
-        const cy = Math.round(c.y * canvas.height);
-        const samples = [];
-        for (let dx = -3; dx <= 3; dx++) {
-            for (let dy = -3; dy <= 3; dy++) {
-                const px = clamp(cx + dx, 0, canvas.width - 1);
-                const py = clamp(cy + dy, 0, canvas.height - 1);
-                const pixel = ctx.getImageData(px, py, 1, 1).data;
-                const lum = (pixel[0] + pixel[1] + pixel[2]) / 3;
-                samples.push(lum);
+        const samples = samplePixelsAroundPoints(canvas, ctx, [landmarks[LM.CHIN_CREASE]], 3);
+        if (samples.length > 0) {
+            const lums = samples.map(luminance);
+            const avg = lums.reduce((a, b) => a + b, 0) / lums.length;
+            const variance = lums.reduce((acc, v) => acc + (v - avg) ** 2, 0) / lums.length;
+            if (variance > 600 && tip === "Normală") {
+                tip = "Cu gropiță";
             }
-        }
-        const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
-        const variance = samples.reduce((acc, v) => acc + (v - avg) ** 2, 0) / samples.length;
-        if (variance > 600 && tip === "Normală") {
-            tip = "Cu gropiță";
         }
     }
     return { tip, raportBarbie: chinRatio.toFixed(2) };
 }
 
 // ---------- Nas ----------
+// Returnează { tip, sursaAnaliza: "profil" | "frontal", precizieRedusa: bool }
 function classifyNose(landmarks, profileLandmarks) {
-    // Preferăm analiza de profil, dacă există
     if (profileLandmarks && profileLandmarks.length >= 468) {
         const bridgeTop = profileLandmarks[LM.NOSE_BRIDGE_TOP];
         const bridgeMid = profileLandmarks[LM.NOSE_BRIDGE_MID];
@@ -578,37 +633,42 @@ function classifyNose(landmarks, profileLandmarks) {
         const noseTip = profileLandmarks[LM.NOSE_TIP];
 
         if (bridgeTop && bridgeMid && bridgeBot && noseTip) {
-            // Deviația punctului median față de linia top-bottom
             const expectedY = (bridgeTop.y + bridgeBot.y) / 2;
             const actualY = bridgeMid.y;
             const deviation = expectedY - actualY;
 
-            // Unghiul dintre bridgeBot și vârful nasului
             const dx = noseTip.x - bridgeBot.x;
             const dy = noseTip.y - bridgeBot.y;
             const angle = Math.atan2(dy, dx) * (180 / Math.PI);
 
-            if (deviation > 0.02) return "Convex"; // cocoașă (acvilin)
-            if (deviation < -0.02) return "Concav"; // nas în șa
-            if (Math.abs(angle) < 20) return "Rectiliniu";
-            if (angle < -25) return "Acvilin";
-            return "Drept";
+            let tip;
+            if (deviation > 0.02) tip = "Convex";
+            else if (deviation < -0.02) tip = "Concav";
+            else if (Math.abs(angle) < 20) tip = "Rectiliniu";
+            else if (angle < -25) tip = "Acvilin";
+            else tip = "Drept";
+
+            return { tip, sursaAnaliza: "profil", precizieRedusa: false };
         }
     }
 
-    // Fallback: analiză frontală
+    // Fallback: analiză doar din poza frontală — precizie mult mai mică
+    // pentru trăsături care depind în principal de conturul lateral.
     const noseW = distance(landmarks[LM.RIGHT_NOSTRIL], landmarks[LM.LEFT_NOSTRIL]);
     const noseTip = landmarks[LM.NOSE_TIP];
     const noseBridge = landmarks[LM.NOSE_BRIDGE_TOP];
     const noseLen = distance(noseTip, noseBridge);
-    if (noseLen < 0.12) return "Concav";
-    if (noseW > 0.09) return "Convex";
-    return "Drept";
+
+    let tip;
+    if (noseLen < 0.12) tip = "Concav";
+    else if (noseW > 0.09) tip = "Convex";
+    else tip = "Drept";
+
+    return { tip, sursaAnaliza: "frontal", precizieRedusa: true };
 }
 
 // ---------- Păr ----------
 function classifyHair(landmarks, canvas, ctx) {
-    const samples = [];
     const hairline = landmarks[LM.HAIRLINE_CENTER];
     const hairlineR = landmarks[LM.HAIRLINE_RIGHT];
     const hairlineL = landmarks[LM.HAIRLINE_LEFT];
@@ -618,20 +678,9 @@ function classifyHair(landmarks, canvas, ctx) {
         { x: hairlineR.x, y: hairlineR.y - 0.06 },
         { x: hairlineL.x, y: hairlineL.y - 0.06 },
         { x: hairline.x, y: hairline.y - 0.12 },
-    ];
+    ].map((p) => ({ x: clamp(p.x, 0.05, 0.95), y: clamp(p.y, 0.02, 0.85) }));
 
-    for (const sp of samplePoints) {
-        const cx = Math.round(clamp(sp.x, 0.05, 0.95) * canvas.width);
-        const cy = Math.round(clamp(sp.y, 0.02, 0.85) * canvas.height);
-        for (let dx = -2; dx <= 2; dx++) {
-            for (let dy = -2; dy <= 2; dy++) {
-                const px = clamp(cx + dx, 0, canvas.width - 1);
-                const py = clamp(cy + dy, 0, canvas.height - 1);
-                const pixel = ctx.getImageData(px, py, 1, 1).data;
-                samples.push({ r: pixel[0], g: pixel[1], b: pixel[2] });
-            }
-        }
-    }
+    const samples = samplePixelsAroundPoints(canvas, ctx, samplePoints, 2);
 
     let culoare = "Nedeterminată";
     let textura = "Nedeterminată";
@@ -641,30 +690,20 @@ function classifyHair(landmarks, canvas, ctx) {
         const avg = averageColor(samples);
         culoare = classifyColor(avg.r, avg.g, avg.b);
 
-        // Varianță pentru textură
-        const luminances = samples.map((c) => (c.r + c.g + c.b) / 3);
-        const avgLum = luminances.reduce((a, b) => a + b, 0) / luminances.length;
-        const variance = luminances.reduce((acc, v) => acc + (v - avgLum) ** 2, 0) / luminances.length;
+        const lums = samples.map(luminance);
+        const avgLum = lums.reduce((a, b) => a + b, 0) / lums.length;
+        const variance = lums.reduce((acc, v) => acc + (v - avgLum) ** 2, 0) / lums.length;
         if (variance > 2500) textura = "Creț";
         else if (variance > 1200) textura = "Ondulat";
         else textura = "Drept";
 
-        // Calviție: compară culoarea scalpului cu pielea frunții
-        const skinL = landmarks[LM.FOREHEAD_SKIN];
-        const sx = Math.round(clamp(skinL.x, 0, 1) * canvas.width);
-        const sy = Math.round(clamp(skinL.y, 0, 1) * canvas.height);
-        const skinPixel = ctx.getImageData(
-            clamp(sx, 0, canvas.width - 1),
-            clamp(sy, 0, canvas.height - 1),
-            1,
-            1
-        ).data;
-        const skinLum = (skinPixel[0] + skinPixel[1] + skinPixel[2]) / 3;
-
-        if (Math.abs(skinLum - avgLum) < 25) {
-            calvitie = "Chelie totală";
-        } else if (Math.abs(skinLum - avgLum) < 55) {
-            calvitie = "Calviție frontală";
+        // Calviție: compară luminozitatea zonei de păr cu pielea frunții
+        const skinSamples = samplePixelsAroundPoints(canvas, ctx, [landmarks[LM.FOREHEAD_SKIN]], 2);
+        if (skinSamples.length > 0) {
+            const skinLum = skinSamples.map(luminance).reduce((a, b) => a + b, 0) / skinSamples.length;
+            const diff = Math.abs(skinLum - avgLum);
+            if (diff < 25) calvitie = "Chelie totală";
+            else if (diff < 55) calvitie = "Calviție frontală";
         }
     }
     return { culoare, textura, calvitie };
@@ -685,35 +724,21 @@ function classifyEyebrows(landmarks, canvas, ctx) {
         const curvature = Math.abs(top.y - avgY);
         maxCurvature = Math.max(maxCurvature, curvature);
     }
-    if (maxCurvature > 0.018) results.push("Arcuite");
-    else results.push("Drepte");
+    results.push(maxCurvature > 0.018 ? "Arcuite" : "Drepte");
 
-    // Densitate (pixeli închiși în zona sprâncenelor)
-    let darkCount = 0;
-    let totalSamples = 0;
-    for (const idx of [
-        LM.RIGHT_BROW_TOP,
-        LM.LEFT_BROW_TOP,
-        LM.RIGHT_BROW_INNER,
-        LM.RIGHT_BROW_OUTER,
-        LM.LEFT_BROW_INNER,
-        LM.LEFT_BROW_OUTER,
-    ]) {
-        const l = landmarks[idx];
-        const cx = Math.round(l.x * canvas.width);
-        const cy = Math.round(l.y * canvas.height);
-        for (let dx = -3; dx <= 3; dx++) {
-            for (let dy = -3; dy <= 3; dy++) {
-                const px = clamp(cx + dx, 0, canvas.width - 1);
-                const py = clamp(cy + dy, 0, canvas.height - 1);
-                const pixel = ctx.getImageData(px, py, 1, 1).data;
-                const lum = (pixel[0] + pixel[1] + pixel[2]) / 3;
-                totalSamples++;
-                if (lum < 100) darkCount++;
-            }
-        }
+    // Densitate (pixeli închiși la culoare în zona sprâncenelor)
+    const browPoints = [
+        LM.RIGHT_BROW_TOP, LM.LEFT_BROW_TOP,
+        LM.RIGHT_BROW_INNER, LM.RIGHT_BROW_OUTER,
+        LM.LEFT_BROW_INNER, LM.LEFT_BROW_OUTER,
+    ].map((idx) => landmarks[idx]);
+
+    const samples = samplePixelsAroundPoints(canvas, ctx, browPoints, 3);
+    let density = 0;
+    if (samples.length > 0) {
+        const darkCount = samples.filter((c) => luminance(c) < 100).length;
+        density = darkCount / samples.length;
     }
-    const density = darkCount / totalSamples;
     if (density > 0.55) results.push("Dese");
     else if (density < 0.25) results.push("Rare");
     else results.push("Stufoase");
@@ -724,33 +749,25 @@ function classifyEyebrows(landmarks, canvas, ctx) {
 // ---------- Barbă și mustață ----------
 function classifyBeardAndMustache(landmarks, canvas, ctx) {
     // Referință piele (obraz)
-    const skinRef = landmarks[LM.RIGHT_CHEEK_SKIN];
-    const sx = Math.round(clamp(skinRef.x, 0, 1) * canvas.width);
-    const sy = Math.round(clamp(skinRef.y, 0, 1) * canvas.height);
-    const skinPixel = ctx.getImageData(clamp(sx, 0, canvas.width - 1), clamp(sy, 0, canvas.height - 1), 1, 1).data;
-    const skinLum = (skinPixel[0] + skinPixel[1] + skinPixel[2]) / 3;
+    const skinSamples = samplePixelsAroundPoints(canvas, ctx, [landmarks[LM.RIGHT_CHEEK_SKIN]], 2);
+    const skinLum = skinSamples.length > 0
+        ? skinSamples.map(luminance).reduce((a, b) => a + b, 0) / skinSamples.length
+        : 150;
 
-    // Regiunea bărbii
+    // Regiunea bărbii — puncte eșantionate între maxilar și bărbie
     const chin = landmarks[LM.CHIN];
     const rightJaw = landmarks[LM.RIGHT_JAW];
     const leftJaw = landmarks[LM.LEFT_JAW];
-    const beardSamples = [];
+    const beardPoints = [];
     for (let t = 0; t <= 1; t += 0.2) {
         const x = rightJaw.x + (leftJaw.x - rightJaw.x) * t;
         const y = rightJaw.y + (chin.y - rightJaw.y) * t * 1.5;
-        const cx = Math.round(clamp(x, 0.05, 0.95) * canvas.width);
-        const cy = Math.round(clamp(y, 0.1, 0.95) * canvas.height);
-        for (let dx = -2; dx <= 2; dx++) {
-            for (let dy = -2; dy <= 2; dy++) {
-                const px = clamp(cx + dx, 0, canvas.width - 1);
-                const py = clamp(cy + dy, 0, canvas.height - 1);
-                const pixel = ctx.getImageData(px, py, 1, 1).data;
-                beardSamples.push((pixel[0] + pixel[1] + pixel[2]) / 3);
-            }
-        }
+        beardPoints.push({ x: clamp(x, 0.05, 0.95), y: clamp(y, 0.1, 0.95) });
     }
-    const beardAvgLum = beardSamples.reduce((a, b) => a + b, 0) / beardSamples.length;
-    const beardDarkRatio = beardSamples.filter((v) => v < skinLum - 40).length / beardSamples.length;
+    const beardSamples = samplePixelsAroundPoints(canvas, ctx, beardPoints, 2);
+    const beardDarkRatio = beardSamples.length > 0
+        ? beardSamples.filter((c) => luminance(c) < skinLum - 40).length / beardSamples.length
+        : 0;
 
     let barba = "Fără barbă";
     if (beardDarkRatio > 0.55) barba = "Barbă completă";
@@ -759,85 +776,22 @@ function classifyBeardAndMustache(landmarks, canvas, ctx) {
 
     // Mustață
     const mouthTop = landmarks[LM.MOUTH_TOP];
-    const mustacheSamples = [];
+    const mustachePoints = [];
     for (let t = 0; t <= 1; t += 0.15) {
         const x = landmarks[LM.MOUTH_RIGHT].x + (landmarks[LM.MOUTH_LEFT].x - landmarks[LM.MOUTH_RIGHT].x) * t;
         const y = mouthTop.y - 0.015;
-        const cx = Math.round(clamp(x, 0.05, 0.95) * canvas.width);
-        const cy = Math.round(clamp(y, 0.05, 0.95) * canvas.height);
-        for (let dx = -1; dx <= 1; dx++) {
-            for (let dy = -2; dy <= 1; dy++) {
-                const px = clamp(cx + dx, 0, canvas.width - 1);
-                const py = clamp(cy + dy, 0, canvas.height - 1);
-                const pixel = ctx.getImageData(px, py, 1, 1).data;
-                mustacheSamples.push((pixel[0] + pixel[1] + pixel[2]) / 3);
-            }
-        }
+        mustachePoints.push({ x: clamp(x, 0.05, 0.95), y: clamp(y, 0.05, 0.95) });
     }
-    const mustacheAvgLum = mustacheSamples.reduce((a, b) => a + b, 0) / mustacheSamples.length;
-    const mustacheDarkRatio = mustacheSamples.filter((v) => v < skinLum - 30).length / mustacheSamples.length;
+    const mustacheSamples = samplePixelsAroundPoints(canvas, ctx, mustachePoints, 2);
+    const mustacheDarkRatio = mustacheSamples.length > 0
+        ? mustacheSamples.filter((c) => luminance(c) < skinLum - 30).length / mustacheSamples.length
+        : 0;
 
     let mustata = "Fără mustață";
     if (mustacheDarkRatio > 0.5) mustata = "Groasă";
     else if (mustacheDarkRatio > 0.3) mustata = "Subțire";
 
     return { barba, mustata };
-}
-
-// ---------- Urechi ----------
-function classifyEars(landmarks, faceWidth, faceHeight, profileLandmarks = null) {
-    // Folosim landmark-urile din profil dacă există, altfel frontal
-    const sourceLandmarks = profileLandmarks || landmarks;
-
-    const earTopRight = sourceLandmarks[LM.RIGHT_EAR_TOP];
-    const earBottomRight = sourceLandmarks[LM.RIGHT_EAR_BOTTOM];
-    const earLobeRight = sourceLandmarks[LM.RIGHT_EAR_LOBE];
-    const earTopLeft = sourceLandmarks[LM.LEFT_EAR_TOP];
-    const earBottomLeft = sourceLandmarks[LM.LEFT_EAR_BOTTOM];
-    const earLobeLeft = sourceLandmarks[LM.LEFT_EAR_LOBE];
-
-    if (!earTopRight || !earBottomRight || !earTopLeft || !earBottomLeft) {
-        return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
-    }
-
-    // Mărime
-    const rightEarHeight = distance(earTopRight, earBottomRight);
-    const leftEarHeight = distance(earTopLeft, earBottomLeft);
-    const avgEarHeight = (rightEarHeight + leftEarHeight) / 2;
-    const faceHeightTotal = faceHeight || distance(sourceLandmarks[LM.HAIRLINE_CENTER], sourceLandmarks[LM.CHIN]);
-    const earHeightRatio = avgEarHeight / faceHeightTotal;
-
-    let marime;
-    if (earHeightRatio < 0.22) marime = "Mici";
-    else if (earHeightRatio > 0.32) marime = "Mari";
-    else marime = "Medii";
-
-    // Formă: raport înălțime / lățime (aproximez lățimea)
-    const rightTragus = sourceLandmarks[LM.FACE_RIGHT_TEMPLE];
-    const leftTragus = sourceLandmarks[LM.FACE_LEFT_TEMPLE];
-    const rightEarWidth = distance(rightTragus, earTopRight) * 1.5;
-    const leftEarWidth = distance(leftTragus, earTopLeft) * 1.5;
-    const avgEarWidth = (rightEarWidth + leftEarWidth) / 2;
-    const ratio = avgEarHeight / avgEarWidth;
-
-    let forma;
-    if (ratio > 1.8) forma = "Dreptunghiulară";
-    else if (ratio > 1.4) forma = "Ovală";
-    else if (ratio > 1.0) forma = "Rotundă";
-    else if (ratio > 0.7) forma = "Triunghiulară";
-    else forma = "Neregulată";
-
-    // Lob
-    const rightLobeAngle = Math.atan2(earBottomRight.y - earLobeRight.y, earBottomRight.x - earLobeRight.x);
-    const leftLobeAngle = Math.atan2(earBottomLeft.y - earLobeLeft.y, earBottomLeft.x - earLobeLeft.x);
-    const avgLobeAngle = (rightLobeAngle + leftLobeAngle) / 2;
-
-    let lob;
-    if (Math.abs(avgLobeAngle) < 0.3) lob = "Atașat";
-    else if (Math.abs(avgLobeAngle) > 0.8) lob = "Liber";
-    else lob = "Nedeterminat";
-
-    return { forma, marime, lob };
 }
 
 // ============================================================
@@ -853,26 +807,27 @@ async function runAnalysis() {
     document.getElementById("analyze-spinner").style.display = "inline-block";
     document.getElementById("analyze-text").textContent = "Se analizează...";
 
+    let frontalProc = null;
+    let profilProc = null;
+
     try {
-        // Procesăm imaginea frontală
         if (!frontalFile) throw new Error("Încarcă poza din față.");
-        const frontalProc = await processImage(frontalFile);
+        frontalProc = await processImage(frontalFile);
         const frontalLandmarks = await extractLandmarks(frontalProc);
         if (!frontalLandmarks) {
             statusEl.className = "status error";
             statusEl.textContent =
                 "❌ Nu s-au putut detecta landmark-urile faciale în poza din față. Verifică încadrarea și claritatea.";
+            purgeImageData(frontalProc);
             return;
         }
-        frontalImageData = { ...frontalProc, landmarks: frontalLandmarks };
 
         // Procesăm imaginea de profil (opțional)
         let profilLandmarks = null;
         if (profilFile) {
             try {
-                const profilProc = await processImage(profilFile);
+                profilProc = await processImage(profilFile);
                 profilLandmarks = await extractLandmarks(profilProc);
-                profilImageData = { ...profilProc, landmarks: profilLandmarks };
                 if (!profilLandmarks) {
                     console.warn("⚠️ Nu s-au detectat landmark-uri în poza de profil. Folosim doar analiza frontală.");
                 }
@@ -881,20 +836,19 @@ async function runAnalysis() {
             }
         }
 
-        // Calculăm dimensiunile de referință
         const faceWidth = distance(
             frontalLandmarks[LM.FACE_RIGHT_TEMPLE],
             frontalLandmarks[LM.FACE_LEFT_TEMPLE]
         );
         const faceHeight = distance(frontalLandmarks[LM.HAIRLINE_CENTER], frontalLandmarks[LM.CHIN]);
 
-        // Construim obiectul de rezultate
         const barbaMustata = classifyBeardAndMustache(frontalLandmarks, frontalProc.canvas, frontalProc.ctx);
-        const urechi = classifyEars(frontalLandmarks, faceWidth, faceHeight, profilLandmarks);
+        const nas = classifyNose(frontalLandmarks, profilLandmarks);
+        noseUsedProfile = nas.sursaAnaliza === "profil";
 
         const results = {
             frunte: classifyForehead(frontalLandmarks, faceWidth),
-            nas: classifyNose(frontalLandmarks, profilLandmarks),
+            nas: nas,
             ochi: classifyEyes(frontalLandmarks, frontalProc.canvas, frontalProc.ctx, faceWidth),
             gura: classifyMouth(frontalLandmarks, faceWidth),
             barbie: classifyChin(frontalLandmarks, faceWidth, frontalProc.canvas, frontalProc.ctx),
@@ -903,7 +857,9 @@ async function runAnalysis() {
             sprancene: classifyEyebrows(frontalLandmarks, frontalProc.canvas, frontalProc.ctx),
             barba: barbaMustata.barba,
             mustata: barbaMustata.mustata,
-            urechi: urechi,
+            // Urechile nu se detectează automat (MediaPipe nu are landmark-uri
+            // de ureche) — rămân complet la alegerea utilizatorului.
+            urechi: { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" },
             semneParticulare: "",
         };
 
@@ -912,17 +868,17 @@ async function runAnalysis() {
         document.getElementById("results-section").classList.add("visible");
         statusEl.className = "status success";
         statusEl.textContent = "✅ Analiza completă! Verifică și corectează rezultatele, apoi salvează fișa.";
-
-        // Cleanup imaginilor din memorie
-        clearCanvasData(frontalProc);
-        if (profilImageData) clearCanvasData(profilImageData);
-
-        console.log("🔄 Imaginile au fost eliminate din canvas/memorie. Doar rezultatele JSON sunt păstrate.");
     } catch (err) {
         console.error("Eroare în analiză:", err);
         statusEl.className = "status error";
         statusEl.textContent = "❌ Eroare: " + err.message;
     } finally {
+        // Curățare fermă a datelor de imagine din memorie, indiferent
+        // de rezultatul analizei. Nicio imagine nu e persistată nicăieri.
+        purgeImageData(frontalProc);
+        purgeImageData(profilProc);
+        console.log("🔄 Datele de imagine au fost eliminate din canvas/memorie. Doar rezultatele JSON sunt păstrate.");
+
         btn.disabled = false;
         document.getElementById("analyze-spinner").style.display = "none";
         document.getElementById("analyze-text").textContent = "🔬 Analizează fețele";
@@ -944,12 +900,18 @@ function renderResults(results) {
         ])
     );
 
-    // Card 2: Nas
-    grid.appendChild(
-        createCard("👃", "Nasul", [
-            makeSelect("nas-tip", "Tipul nasului", OPTIONS.nas, results.nas || "Drept"),
-        ])
-    );
+    // Card 2: Nas (cu avertisment dacă lipsește poza de profil)
+    const nasFields = [
+        makeSelect("nas-tip", "Tipul nasului", OPTIONS.nas, results.nas.tip || "Drept"),
+    ];
+    if (results.nas.precizieRedusa) {
+        const warn = document.createElement("p");
+        warn.style.cssText = "font-size:0.75rem;color:#f0a020;margin-top:4px;";
+        warn.textContent =
+            "⚠️ Analizat doar din poza frontală — fără poza din profil, precizia pentru forma nasului este redusă. Verifică manual.";
+        nasFields.push(warn);
+    }
+    grid.appendChild(createCard("👃", "Nasul", nasFields));
 
     // Card 3: Ochi
     grid.appendChild(
@@ -1011,14 +973,18 @@ function renderResults(results) {
         ])
     );
 
-    // Card 11: Urechi
-    grid.appendChild(
-        createCard("👂", "Urechile", [
-            makeSelect("urechi-forma", "Forma urechii", OPTIONS.urechiForma, results.urechi.forma || "Nedeterminată"),
-            makeSelect("urechi-marime", "Mărimea urechii", OPTIONS.urechiMarime, results.urechi.marime || "Nedeterminată"),
-            makeSelect("urechi-lob", "Lobul urechii", OPTIONS.urechiLob, results.urechi.lob || "Nedeterminat"),
-        ])
-    );
+    // Card 11: Urechi — 100% input manual (fără detecție automată)
+    const urechiFields = [
+        makeSelect("urechi-forma", "Forma urechii", OPTIONS.urechiForma, results.urechi.forma || "Nedeterminată"),
+        makeSelect("urechi-marime", "Mărimea urechii", OPTIONS.urechiMarime, results.urechi.marime || "Nedeterminată"),
+        makeSelect("urechi-lob", "Lobul urechii", OPTIONS.urechiLob, results.urechi.lob || "Nedeterminat"),
+    ];
+    const earNote = document.createElement("p");
+    earNote.style.cssText = "font-size:0.75rem;color:var(--text-secondary);margin-top:4px;";
+    earNote.textContent =
+        "ℹ️ Urechile nu pot fi detectate automat (modelul de landmark-uri folosit nu acoperă zona urechii). Completează manual.";
+    urechiFields.push(earNote);
+    grid.appendChild(createCard("👂", "Urechile", urechiFields));
 
     // Card 12: Semne particulare
     grid.appendChild(
@@ -1035,8 +1001,9 @@ function renderResults(results) {
         <div class="card-title"><span class="emoji">ℹ️</span> Fiabilitate</div>
         <p style="font-size:0.8rem;color:var(--text-secondary);">
             Categoriile geometrice (tip față, gură, frunte, sprâncene) au fiabilitate ridicată.
-            Culoarea ochilor/părului este aproximativă (sampling RGB). Tipul nasului necesită
-            poza de profil pentru o precizie mai bună. Barba/mustața sunt orientative.
+            Culoarea ochilor/părului este aproximativă (sampling de culoare). Tipul nasului
+            este mult mai precis cu poza de profil inclusă. Barba/mustața sunt orientative.
+            Urechile și semnele particulare sunt introduse exclusiv manual.
             Verifică toate rezultatele înainte de salvare.
         </p>
     `;
@@ -1125,7 +1092,7 @@ function collectResultsFromUI() {
 
     return {
         frunte: { tip: getVal("frunte-tip") },
-        nas: getVal("nas-tip"),
+        nas: { tip: getVal("nas-tip") },
         ochi: {
             culoare: getVal("ochi-culoare"),
             marime: getVal("ochi-marime"),
@@ -1239,6 +1206,10 @@ function renderSavedList() {
 }
 
 function loadSavedData(data) {
+    // Normalizăm forma "nas" (poate fi string vechi sau obiect nou)
+    if (typeof data.nas === "string") {
+        data = { ...data, nas: { tip: data.nas } };
+    }
     currentResults = data;
     renderResults(data);
     document.getElementById("results-section").classList.add("visible");
@@ -1254,6 +1225,7 @@ function resetAll() {
         currentResults = null;
         frontalFile = null;
         profilFile = null;
+        noseUsedProfile = false;
         document.getElementById("results-section").classList.remove("visible");
         document.getElementById("status").className = "status";
         document.getElementById("status").textContent = "";
