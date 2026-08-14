@@ -1,5 +1,7 @@
 // ============================================================
-// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v6, cu detecție urechi)
+// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v8, cu estimare vârstă)
+// ============================================================
+// Bazat pe versiunea debugged v7, adăugând funcția estimateAge().
 // ============================================================
 
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
@@ -9,7 +11,7 @@ const MODEL_URL =
 const WASM_PATH =
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 
-// URL pentru OpenCV.js (folosit pentru detecția urechii)
+// URL pentru OpenCV.js (folosit pentru detecția urechii și estimarea vârstei)
 const OPENCV_URL = "https://docs.opencv.org/4.8.0/opencv.js";
 
 let faceLandmarker = null;
@@ -17,8 +19,7 @@ let currentResults = null;
 let objectUrls = [];
 let frontalFile = null;
 let profilFile = null;
-let noseUsedProfile = false;
-let opencvReady = false; // devine true după încărcarea OpenCV.js
+let opencvReady = false;
 
 // ============================================================
 // INDICI LANDMARK-URI MEDIAPIPE FACE MESH (esențiali)
@@ -63,8 +64,6 @@ const LM = {
     RIGHT_CHEEK_SKIN: 116,
     LEFT_CHEEK_SKIN: 345,
     FOREHEAD_SKIN: 8,
-    // Aproximări pentru ureche (stânga/dreapta în profil)
-    EAR_REGION_CENTER: 130, // nu există real, folosit doar ca referință
 };
 
 // ============================================================
@@ -158,6 +157,30 @@ function samplePixelsAroundPoints(canvas, ctx, points, radiusPx = 3) {
 function luminance(c) { return (c.r + c.g + c.b) / 3; }
 
 // ============================================================
+// ORIENTARE POZĂ DE PROFIL (dreapta / stânga)
+// ============================================================
+function detectProfileSide(landmarks) {
+    const rightZ = landmarks[LM.FACE_RIGHT_TEMPLE]?.z ?? 0;
+    const leftZ = landmarks[LM.FACE_LEFT_TEMPLE]?.z ?? 0;
+    return rightZ <= leftZ ? "right" : "left";
+}
+
+function getSideLandmarks(landmarks, side) {
+    if (side === "left") {
+        return {
+            temple: landmarks[LM.FACE_LEFT_TEMPLE],
+            jaw: landmarks[LM.LEFT_JAW],
+            cheekbone: landmarks[LM.LEFT_CHEEKBONE],
+        };
+    }
+    return {
+        temple: landmarks[LM.FACE_RIGHT_TEMPLE],
+        jaw: landmarks[LM.RIGHT_JAW],
+        cheekbone: landmarks[LM.RIGHT_CHEEKBONE],
+    };
+}
+
+// ============================================================
 // ÎNCĂRCARE DINAMICĂ OPENCV.JS
 // ============================================================
 function loadOpenCV() {
@@ -212,6 +235,16 @@ async function initFaceLandmarker() {
 // ============================================================
 // GESTIONARE UPLOAD IMAGINI
 // ============================================================
+function replacePreviewUrl(preview, newUrl) {
+    if (preview.src && preview.src.startsWith("blob:")) {
+        const oldUrl = preview.src;
+        objectUrls = objectUrls.filter((u) => u !== oldUrl);
+        URL.revokeObjectURL(oldUrl);
+    }
+    objectUrls.push(newUrl);
+    preview.src = newUrl;
+}
+
 function setupUploadZone(zoneId, fileInputId, previewId, removeBtnId, callback) {
     const zone = document.getElementById(zoneId);
     const fileInput = document.getElementById(fileInputId);
@@ -223,8 +256,7 @@ function setupUploadZone(zoneId, fileInputId, previewId, removeBtnId, callback) 
         if (e.target.files.length > 0) {
             const file = e.target.files[0];
             const url = URL.createObjectURL(file);
-            objectUrls.push(url);
-            preview.src = url;
+            replacePreviewUrl(preview, url);
             preview.classList.add("visible");
             removeBtn.classList.add("visible");
             callback(url, file);
@@ -252,8 +284,7 @@ function setupUploadZone(zoneId, fileInputId, previewId, removeBtnId, callback) 
             const file = e.dataTransfer.files[0];
             fileInput.files = e.dataTransfer.files;
             const url = URL.createObjectURL(file);
-            objectUrls.push(url);
-            preview.src = url;
+            replacePreviewUrl(preview, url);
             preview.classList.add("visible");
             removeBtn.classList.add("visible");
             callback(url, file);
@@ -331,7 +362,7 @@ function purgeImageData(imageData) {
 }
 
 // ============================================================
-// CLASIFICATORI PE CATEGORII (fără urechi)
+// CLASIFICATORI PE CATEGORII (fără urechi și vârstă)
 // ============================================================
 function classifyForehead(landmarks, faceWidth) {
     const hairline = landmarks[LM.HAIRLINE_CENTER];
@@ -437,7 +468,9 @@ function classifyNose(landmarks, profileLandmarks) {
             const actualY = bridgeMid.y;
             const deviation = expectedY - actualY;
             const dx = noseTip.x - bridgeBot.x, dy = noseTip.y - bridgeBot.y;
-            const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+            const side = detectProfileSide(profileLandmarks);
+            const rawAngle = Math.atan2(dy, dx) * (180 / Math.PI);
+            const angle = side === "left" ? -rawAngle : rawAngle;
             let tip;
             if (deviation > 0.02) tip = "Convex";
             else if (deviation < -0.02) tip = "Concav";
@@ -562,26 +595,20 @@ function classifyBeardAndMustache(landmarks, canvas, ctx) {
 // DETECȚIA URECHEI (euristică, bazată pe OpenCV.js)
 // ============================================================
 async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHeight) {
-    // Dacă nu avem OpenCV, returnăm indeterminat
     if (!window.cv) {
         console.warn("OpenCV.js nu este disponibil. Detecția urechii este dezactivată.");
         return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
     }
 
     const canvas = profileImageData.canvas;
-    const ctx = profileImageData.ctx;
 
-    // Aproximăm regiunea urechii folosind landmark-urile feței (profil).
-    // Presupunem că urechea este plasată lateral, între tâmplă și maxilar.
-    const temple = profileLandmarks[LM.FACE_RIGHT_TEMPLE] || profileLandmarks[LM.FACE_LEFT_TEMPLE];
-    const jaw = profileLandmarks[LM.RIGHT_JAW] || profileLandmarks[LM.LEFT_JAW];
-    const cheekbone = profileLandmarks[LM.RIGHT_CHEEKBONE] || profileLandmarks[LM.LEFT_CHEEKBONE];
+    const side = detectProfileSide(profileLandmarks);
+    const { temple, jaw, cheekbone } = getSideLandmarks(profileLandmarks, side);
 
     if (!temple || !jaw || !cheekbone) {
         return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
     }
 
-    // Definim bounding box aproximativ pentru ureche (în coordonate normalizate 0-1)
     const centerX = (temple.x + jaw.x) / 2;
     const centerY = (temple.y + cheekbone.y) / 2;
     const earWidth = Math.abs(temple.x - jaw.x) * 1.8;
@@ -592,7 +619,6 @@ async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHei
     const top = clamp(centerY - earHeight / 2, 0.02, 0.85);
     const bottom = clamp(centerY + earHeight / 2, 0.1, 0.95);
 
-    // Convertim în pixeli
     const pxLeft = Math.round(left * canvas.width);
     const pxRight = Math.round(right * canvas.width);
     const pxTop = Math.round(top * canvas.height);
@@ -602,77 +628,73 @@ async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHei
 
     if (roiWidth < 20 || roiHeight < 20) return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
 
-    // Extragem regiunea de interes
     const roiCanvas = document.createElement("canvas");
     roiCanvas.width = roiWidth;
     roiCanvas.height = roiHeight;
     const roiCtx = roiCanvas.getContext("2d");
     roiCtx.drawImage(canvas, pxLeft, pxTop, roiWidth, roiHeight, 0, 0, roiWidth, roiHeight);
 
-    // Convertim în Mat OpenCV
     const src = cv.imread(roiCanvas);
     const gray = new cv.Mat();
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
     cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
 
-    // Aplicăm Canny
     const edges = new cv.Mat();
     cv.Canny(gray, edges, 50, 150);
 
-    // Găsim contururi
     const contours = new cv.MatVector();
     const hierarchy = new cv.Mat();
     cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-    let bestContour = null;
-    let maxArea = 0;
-    for (let i = 0; i < contours.size(); i++) {
-        const contour = contours.get(i);
-        const area = cv.contourArea(contour);
-        if (area > maxArea && area > 100) { // prag minim
-            maxArea = area;
-            bestContour = contour;
-        }
-    }
 
     let forma = "Nedeterminată";
     let marime = "Nedeterminată";
     let lob = "Nedeterminat";
 
+    const extractedMats = [];
+    let bestContour = null;
+    let bestRect = null;
+    let maxArea = 0;
+
+    for (let i = 0; i < contours.size(); i++) {
+        const contour = contours.get(i);
+        extractedMats.push(contour);
+        const area = cv.contourArea(contour);
+        if (area > maxArea && area > 100) {
+            maxArea = area;
+            bestContour = contour;
+        }
+    }
+
     if (bestContour) {
         const rect = cv.boundingRect(bestContour);
+        bestRect = rect;
         const aspectRatio = rect.height / rect.width;
         const relativeHeight = rect.height / faceHeight;
 
-        // Forma pe baza raportului de aspect
         if (aspectRatio > 1.8) forma = "Dreptunghiulară";
         else if (aspectRatio > 1.4) forma = "Ovală";
         else if (aspectRatio > 1.0) forma = "Rotundă";
         else if (aspectRatio > 0.7) forma = "Triunghiulară";
         else forma = "Neregulată";
 
-        // Mărime: raport înălțime ureche / înălțime față
         if (relativeHeight < 0.22) marime = "Mici";
         else if (relativeHeight > 0.32) marime = "Mari";
         else marime = "Medii";
 
-        // Lob: încercăm să detectăm o separare în partea de jos
-        // Prin verificarea contururilor secundare în jumătatea inferioară a ROI
-        const lowerContours = [];
         const roiLowerY = roiHeight * 0.6;
-        for (let i = 0; i < contours.size(); i++) {
-            const c = contours.get(i);
+        let lowerContourCount = 0;
+        for (const c of extractedMats) {
             const r = cv.boundingRect(c);
             if (r.y > roiLowerY && r.height > roiHeight * 0.1) {
-                lowerContours.push(c);
+                lowerContourCount++;
             }
         }
-        // Dacă găsim un contur separat în partea de jos, presupunem lob liber
-        if (lowerContours.length > 1) lob = "Liber";
-        else lob = "Atașat";
+        lob = lowerContourCount > 1 ? "Liber" : "Atașat";
     }
 
-    // Curățare memorie OpenCV
+    for (const mat of extractedMats) {
+        mat.delete();
+    }
     src.delete();
     gray.delete();
     edges.delete();
@@ -680,6 +702,86 @@ async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHei
     hierarchy.delete();
 
     return { forma, marime, lob };
+}
+
+// ============================================================
+// ESTIMAREA VÂRSTEI (euristică, bazată pe textura pielii)
+// ============================================================
+function estimateAge(landmarks, canvas, ctx, hairResult) {
+    let ageRange = "Nedeterminată";
+
+    // Dacă părul este cărunt, presupunem automat vârstă mai mare
+    if (hairResult && (hairResult.culoare === "Cărunt" || hairResult.culoare === "Alb")) {
+        return "50-70";
+    }
+
+    if (window.cv && opencvReady) {
+        try {
+            // Regiunile de interes: frunte (între linia părului și sprâncene),
+            // colțurile exterioare ale ochilor (unde apar ridurile „de zâmbet”)
+            const browY = (landmarks[LM.RIGHT_BROW_TOP].y + landmarks[LM.LEFT_BROW_TOP].y) / 2;
+            const foreheadTop = landmarks[LM.HAIRLINE_CENTER];
+            const foreheadRegion = {
+                x: foreheadTop.x - 0.2,
+                y: foreheadTop.y,
+                w: 0.4,
+                h: Math.max(0.05, (browY - foreheadTop.y) * 0.5)
+            };
+            const leftEyeOuter = landmarks[LM.LEFT_EYE_OUTER];
+            const rightEyeOuter = landmarks[LM.RIGHT_EYE_OUTER];
+            const eyeRegionSize = 0.12; // dimensiunea zonei în jurul colțului ochiului
+
+            const regions = [
+                foreheadRegion,
+                { x: leftEyeOuter.x - eyeRegionSize / 2, y: leftEyeOuter.y - eyeRegionSize / 2, w: eyeRegionSize, h: eyeRegionSize },
+                { x: rightEyeOuter.x - eyeRegionSize / 2, y: rightEyeOuter.y - eyeRegionSize / 2, w: eyeRegionSize, h: eyeRegionSize }
+            ];
+
+            let totalEdges = 0;
+            let totalPixels = 0;
+
+            for (const region of regions) {
+                const x = Math.round(region.x * canvas.width);
+                const y = Math.round(region.y * canvas.height);
+                const w = Math.round(region.w * canvas.width);
+                const h = Math.round(region.h * canvas.height);
+                if (x < 0 || y < 0 || w < 1 || h < 1) continue;
+
+                const roiCanvas = document.createElement("canvas");
+                roiCanvas.width = w;
+                roiCanvas.height = h;
+                roiCanvas.getContext("2d").drawImage(canvas, x, y, w, h, 0, 0, w, h);
+
+                const src = cv.imread(roiCanvas);
+                const gray = new cv.Mat();
+                cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+                cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+                const edges = new cv.Mat();
+                cv.Canny(gray, edges, 50, 150);
+
+                const nonZero = cv.countNonZero(edges);
+                totalEdges += nonZero;
+                totalPixels += w * h;
+
+                src.delete();
+                gray.delete();
+                edges.delete();
+            }
+
+            if (totalPixels > 0) {
+                const edgeDensity = totalEdges / totalPixels;
+                // Mapare la intervale de vârstă
+                if (edgeDensity > 0.15) ageRange = "45-60";
+                else if (edgeDensity > 0.08) ageRange = "30-45";
+                else ageRange = "18-30";
+            }
+        } catch (err) {
+            console.warn("Eroare la estimarea vârstei:", err);
+            ageRange = "Nedeterminată";
+        }
+    }
+
+    return ageRange;
 }
 
 // ============================================================
@@ -744,7 +846,10 @@ async function runAnalysis() {
 
         const barbaMustata = classifyBeardAndMustache(frontalLandmarks, frontalProc.canvas, frontalProc.ctx);
         const nas = classifyNose(frontalLandmarks, profilLandmarks);
-        noseUsedProfile = nas.sursaAnaliza === "profil";
+        const par = classifyHair(frontalLandmarks, frontalProc.canvas, frontalProc.ctx);
+
+        // Estimarea vârstei
+        const varsta = estimateAge(frontalLandmarks, frontalProc.canvas, frontalProc.ctx, par);
 
         const results = {
             frunte: classifyForehead(frontalLandmarks, faceWidth),
@@ -753,11 +858,12 @@ async function runAnalysis() {
             gura: classifyMouth(frontalLandmarks, faceWidth),
             barbie: classifyChin(frontalLandmarks, faceWidth, frontalProc.canvas, frontalProc.ctx),
             tipFata: classifyFaceType(frontalLandmarks),
-            par: classifyHair(frontalLandmarks, frontalProc.canvas, frontalProc.ctx),
+            par: par,
             sprancene: classifyEyebrows(frontalLandmarks, frontalProc.canvas, frontalProc.ctx),
             barba: barbaMustata.barba,
             mustata: barbaMustata.mustata,
             urechi: urechi,
+            varsta: varsta,
             semneParticulare: ""
         };
 
@@ -837,7 +943,7 @@ function renderResults(results) {
         makeTextValue("Tipul mustății", results.mustata || "Fără mustață")
     ]));
 
-    // Card urechi (cu rezultate detectate sau indeterminate)
+    // Card urechi
     const urechiFields = [
         makeTextValue("Forma urechii", results.urechi?.forma || "Nedeterminată"),
         makeTextValue("Mărimea urechii", results.urechi?.marime || "Nedeterminată"),
@@ -850,6 +956,11 @@ function renderResults(results) {
         urechiFields.push(note);
     }
     grid.appendChild(createCard("👂", "Urechile", urechiFields));
+
+    // Card vârstă
+    grid.appendChild(createCard("🎂", "Vârsta estimată", [
+        makeTextValue("Interval", results.varsta || "Nedeterminată")
+    ]));
 
     grid.appendChild(createCard("⭐", "Semne particulare", [
         makeTextValue("Tatuaje, cicatrici etc.", results.semneParticulare || "Nespecificate")
@@ -864,7 +975,7 @@ function renderResults(results) {
             Categoriile geometrice (tip față, gură, frunte, sprâncene) au fiabilitate ridicată.
             Culoarea ochilor/părului este aproximativă (sampling de culoare). Tipul nasului
             este mult mai precis cu poza de profil inclusă. Barba/mustața sunt orientative.
-            Detecția urechilor este experimentală și poate fi imprecisă. Verifică rezultatele.
+            Detecția urechilor și estimarea vârstei sunt experimentale și pot fi imprecise.
         </p>
     `;
     grid.appendChild(infoCard);
@@ -993,6 +1104,7 @@ function loadSavedData(data) {
     if (!data.barba) data.barba = "Fără barbă";
     if (!data.mustata) data.mustata = "Fără mustață";
     if (!data.semneParticulare) data.semneParticulare = "";
+    if (!data.varsta) data.varsta = "Nedeterminată";
 
     currentResults = data;
     renderResults(data);
@@ -1009,7 +1121,6 @@ function resetAll() {
         currentResults = null;
         frontalFile = null;
         profilFile = null;
-        noseUsedProfile = false;
         document.getElementById("results-section").classList.remove("visible");
         document.getElementById("status").className = "status";
         document.getElementById("status").textContent = "";
