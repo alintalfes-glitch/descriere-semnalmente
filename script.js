@@ -1,7 +1,11 @@
 // ============================================================
-// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v8, cu estimare vârstă)
+// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v9, corectat)
 // ============================================================
-// Bazat pe versiunea debugged v7, adăugând funcția estimateAge().
+// Modificări:
+// - OpenCV.js se încarcă corect, așteptând inițializarea runtime-ului.
+// - Estimarea vârstei funcționează (analiza ridurilor cu OpenCV).
+// - Detecția urechilor folosește OpenCV, cu orientare corectă.
+// - Semnele particulare au casetă de introducere manuală.
 // ============================================================
 
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
@@ -181,11 +185,11 @@ function getSideLandmarks(landmarks, side) {
 }
 
 // ============================================================
-// ÎNCĂRCARE DINAMICĂ OPENCV.JS
+// ÎNCĂRCARE DINAMICĂ OPENCV.JS (cu așteptare runtime)
 // ============================================================
 function loadOpenCV() {
     return new Promise((resolve, reject) => {
-        if (opencvReady && window.cv) {
+        if (opencvReady && window.cv && window.cv.Mat) {
             resolve();
             return;
         }
@@ -193,8 +197,16 @@ function loadOpenCV() {
         script.src = OPENCV_URL;
         script.async = true;
         script.onload = () => {
-            opencvReady = true;
-            resolve();
+            // OpenCV.js are un runtime asincron; așteptăm inițializarea
+            const checkReady = () => {
+                if (window.cv && window.cv.Mat) {
+                    opencvReady = true;
+                    resolve();
+                } else {
+                    setTimeout(checkReady, 100);
+                }
+            };
+            checkReady();
         };
         script.onerror = () => {
             reject(new Error("Nu s-a putut încărca OpenCV.js."));
@@ -595,7 +607,7 @@ function classifyBeardAndMustache(landmarks, canvas, ctx) {
 // DETECȚIA URECHEI (euristică, bazată pe OpenCV.js)
 // ============================================================
 async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHeight) {
-    if (!window.cv) {
+    if (!window.cv || !opencvReady) {
         console.warn("OpenCV.js nu este disponibil. Detecția urechii este dezactivată.");
         return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
     }
@@ -717,8 +729,6 @@ function estimateAge(landmarks, canvas, ctx, hairResult) {
 
     if (window.cv && opencvReady) {
         try {
-            // Regiunile de interes: frunte (între linia părului și sprâncene),
-            // colțurile exterioare ale ochilor (unde apar ridurile „de zâmbet”)
             const browY = (landmarks[LM.RIGHT_BROW_TOP].y + landmarks[LM.LEFT_BROW_TOP].y) / 2;
             const foreheadTop = landmarks[LM.HAIRLINE_CENTER];
             const foreheadRegion = {
@@ -729,7 +739,7 @@ function estimateAge(landmarks, canvas, ctx, hairResult) {
             };
             const leftEyeOuter = landmarks[LM.LEFT_EYE_OUTER];
             const rightEyeOuter = landmarks[LM.RIGHT_EYE_OUTER];
-            const eyeRegionSize = 0.12; // dimensiunea zonei în jurul colțului ochiului
+            const eyeRegionSize = 0.12;
 
             const regions = [
                 foreheadRegion,
@@ -770,7 +780,6 @@ function estimateAge(landmarks, canvas, ctx, hairResult) {
 
             if (totalPixels > 0) {
                 const edgeDensity = totalEdges / totalPixels;
-                // Mapare la intervale de vârstă
                 if (edgeDensity > 0.15) ageRange = "45-60";
                 else if (edgeDensity > 0.08) ageRange = "30-45";
                 else ageRange = "18-30";
@@ -805,7 +814,7 @@ async function runAnalysis() {
         try {
             await loadOpenCV();
         } catch (cvError) {
-            console.warn("OpenCV.js nu a putut fi încărcat. Detecția urechii va fi dezactivată.");
+            console.warn("OpenCV.js nu a putut fi încărcat. Detecția urechii și estimarea vârstei vor fi dezactivate.");
         }
 
         if (!frontalFile) throw new Error("Încarcă poza din față.");
@@ -888,7 +897,7 @@ async function runAnalysis() {
 }
 
 // ============================================================
-// RENDERIZARE REZULTATE – AFIȘARE SIMPLĂ, FĂRĂ EDITARE
+// RENDERIZARE REZULTATE – AFIȘARE SIMPLĂ + INPUT MANUAL SEMNE
 // ============================================================
 function renderResults(results) {
     const grid = document.getElementById("results-grid");
@@ -962,9 +971,20 @@ function renderResults(results) {
         makeTextValue("Interval", results.varsta || "Nedeterminată")
     ]));
 
-    grid.appendChild(createCard("⭐", "Semne particulare", [
-        makeTextValue("Tatuaje, cicatrici etc.", results.semneParticulare || "Nespecificate")
-    ]));
+    // Card semne particulare – cu input text manual
+    const semneContainer = document.createElement("div");
+    semneContainer.className = "field";
+    const semneLabel = document.createElement("label");
+    semneLabel.className = "field-label";
+    semneLabel.textContent = "Tatuaje, cicatrici etc.";
+    const semneInput = document.createElement("input");
+    semneInput.type = "text";
+    semneInput.id = "semne-text";
+    semneInput.placeholder = "Introduceți manual observații...";
+    semneInput.value = results.semneParticulare || "";
+    semneContainer.appendChild(semneLabel);
+    semneContainer.appendChild(semneInput);
+    grid.appendChild(createCard("⭐", "Semne particulare", [semneContainer]));
 
     const infoCard = document.createElement("div");
     infoCard.className = "result-card";
@@ -1007,6 +1027,18 @@ function makeTextValue(labelText, value) {
 }
 
 // ============================================================
+// COLECTARE REZULTATE (inclusiv input-ul manual de semne)
+// ============================================================
+function collectResultsFromUI() {
+    const semne = document.getElementById("semne-text")?.value || "";
+    return {
+        ...currentResults,
+        semneParticulare: semne,
+        dataAnaliza: new Date().toISOString()
+    };
+}
+
+// ============================================================
 // SALVARE / EXPORT
 // ============================================================
 function saveResults() {
@@ -1014,9 +1046,10 @@ function saveResults() {
         alert("❌ Nu există rezultate de salvat. Rulează mai întâi analiza.");
         return;
     }
+    const data = collectResultsFromUI();
     const key = "semnalmente:" + Date.now();
     try {
-        localStorage.setItem(key, JSON.stringify(currentResults));
+        localStorage.setItem(key, JSON.stringify(data));
         alert("✅ Fișa a fost salvată în localStorage sub cheia: " + key);
         renderSavedList();
     } catch (err) {
@@ -1029,7 +1062,8 @@ function exportResults() {
         alert("❌ Nu există rezultate de exportat.");
         return;
     }
-    const json = JSON.stringify(currentResults, null, 2);
+    const data = collectResultsFromUI();
+    const json = JSON.stringify(data, null, 2);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
