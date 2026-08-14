@@ -8,7 +8,7 @@
     <!-- CSS extern -->
     <link rel="stylesheet" href="style.css">
     
-    <!-- Importmap pentru MediaPipe Tasks Vision -->
+    <!-- Importmap pentru MediaPipe Tasks Vision (trebuie să apară înaintea oricărui <script type="module"> care îl folosește) -->
     <script type="importmap">
         {
             "imports": {
@@ -34,17 +34,19 @@
             <div class="upload-zone" id="drop-frontal">
                 <span class="label">📸 Fotografie din față</span>
                 <span class="hint">Click sau trage imaginea aici</span>
+                <label for="file-frontal" class="sr-only">Încarcă fotografia din față</label>
                 <input type="file" accept="image/*" id="file-frontal">
                 <img id="preview-frontal" alt="Preview față">
-                <button class="remove-btn" id="remove-frontal" title="Elimină">✕</button>
+                <button class="remove-btn" id="remove-frontal" title="Elimină" aria-label="Elimină fotografia din față">✕</button>
             </div>
             <!-- Zona upload profil -->
             <div class="upload-zone" id="drop-profil">
                 <span class="label">📷 Fotografie din profil</span>
                 <span class="hint">Click sau trage imaginea aici (opțional, dar recomandat)</span>
+                <label for="file-profil" class="sr-only">Încarcă fotografia din profil</label>
                 <input type="file" accept="image/*" id="file-profil">
                 <img id="preview-profil" alt="Preview profil">
-                <button class="remove-btn" id="remove-profil" title="Elimină">✕</button>
+                <button class="remove-btn" id="remove-profil" title="Elimină" aria-label="Elimină fotografia din profil">✕</button>
             </div>
         </div>
 
@@ -66,10 +68,14 @@
                 <button class="btn btn-export" id="btn-export">📥 Exportă JSON</button>
                 <button class="btn btn-secondary" id="btn-reset">🔄 Resetează tot</button>
             </div>
-            <div class="saved-list" id="saved-list">
-                <h3>📋 Fișe salvate anterior</h3>
-                <div id="saved-items"></div>
-            </div>
+        </div>
+
+        <!-- Secțiune separată, mereu vizibilă (independentă de o analiză nouă),
+             astfel încât utilizatorul să poată vedea și încărca fișe salvate
+             anterior chiar dacă nu a rulat încă o analiză în sesiunea curentă. -->
+        <div class="saved-list" id="saved-list">
+            <h3>📋 Fișe salvate anterior</h3>
+            <div id="saved-items"></div>
         </div>
 
         <footer>
