@@ -1,5 +1,5 @@
 // ============================================================
-// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v4, doar afișare)
+// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v5, corectat)
 // ============================================================
 
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
@@ -96,21 +96,14 @@ function rgbToHsl(r, g, b) {
     return { h: h * 360, s: s * 100, l: l * 100 };
 }
 
-// Clasificare culoare îmbunătățită
 function classifyColor(r, g, b) {
     const { h, s, l } = rgbToHsl(r, g, b);
-    // Negru: luminozitate scăzută, saturație scăzută
     if (l < 20) return "Negru";
     if (l < 30 && s < 30) return "Negru";
-    // Șaten (brun) – luminozitate medie, saturație medie
     if (l < 60 && s < 35) return "Șaten";
-    // Blond – luminozitate ridicată, saturație scăzută
     if (l > 70 && s < 20) return "Blond";
-    // Roșcat – nuanță în zona roșie/portocalie
     if (h < 20 && s > 25) return "Roșcat";
-    // Cărunt – luminozitate mare, saturație foarte scăzută
     if (l > 75 && s < 15) return "Cărunt";
-    // Fallback
     if (h < 45) return "Blond";
     if (h < 80) return "Șaten";
     return "Negru";
@@ -296,7 +289,6 @@ function purgeImageData(imageData) {
     } catch (err) { console.warn("Curățare imagine: eroare minoră ignorată:", err); }
 }
 
-// Clasificator frunte
 function classifyForehead(landmarks, faceWidth) {
     const hairline = landmarks[LM.HAIRLINE_CENTER];
     const browY = (landmarks[LM.RIGHT_BROW_TOP].y + landmarks[LM.LEFT_BROW_TOP].y) / 2;
@@ -421,16 +413,12 @@ function classifyNose(landmarks, profileLandmarks) {
     return { tip, sursaAnaliza: "frontal", precizieRedusa: true };
 }
 
-// ------------------------------------------------------------
-// CLASIFICARE PĂR ÎMBUNĂTĂȚITĂ
-// ------------------------------------------------------------
 function classifyHair(landmarks, canvas, ctx) {
     const hairline = landmarks[LM.HAIRLINE_CENTER];
     const hairlineR = landmarks[LM.HAIRLINE_RIGHT];
     const hairlineL = landmarks[LM.HAIRLINE_LEFT];
     const faceHeight = distance(landmarks[LM.HAIRLINE_CENTER], landmarks[LM.CHIN]);
     const samplePoints = [];
-    // Generăm o grilă de puncte deasupra liniei părului, extinsă pe toată lățimea frunții
     const leftX = hairlineL.x;
     const rightX = hairlineR.x;
     const topY = clamp(hairline.y - 0.25 * faceHeight, 0.02, 0.85);
@@ -445,25 +433,21 @@ function classifyHair(landmarks, canvas, ctx) {
     const samples = samplePixelsAroundPoints(canvas, ctx, samplePoints, 2);
     let culoare = "Nedeterminată", textura = "Nedeterminată", calvitie = "Fără calviție";
     if (samples.length > 0) {
-        // Pentru culoare folosim media celor mai întunecați 30% pixeli (percentilă inferioară)
         const lums = samples.map(luminance).sort((a, b) => a - b);
         const cutoff = Math.floor(lums.length * 0.3);
         const darkLums = lums.slice(0, cutoff);
         const avgDarkLum = darkLums.reduce((a, b) => a + b, 0) / darkLums.length;
-        // Convertim luminozitatea medie întunecată în culoare aproximativă folosind un prag
         if (avgDarkLum < 40) culoare = "Negru";
         else if (avgDarkLum < 75) culoare = "Șaten";
         else if (avgDarkLum < 130) culoare = "Blond";
         else culoare = "Cărunt";
 
-        // Textura: varianța luminanței totale
         const avgLum = lums.reduce((a, b) => a + b, 0) / lums.length;
         const variance = lums.reduce((acc, v) => acc + (v - avgLum) ** 2, 0) / lums.length;
         if (variance > 2500) textura = "Creț";
         else if (variance > 1200) textura = "Ondulat";
         else textura = "Drept";
 
-        // Calviție: contrast cu pielea frunții
         const skinSamples = samplePixelsAroundPoints(canvas, ctx, [landmarks[LM.FOREHEAD_SKIN]], 2);
         if (skinSamples.length > 0) {
             const skinLum = skinSamples.map(luminance).reduce((a, b) => a + b, 0) / skinSamples.length;
@@ -576,8 +560,7 @@ async function runAnalysis() {
             sprancene: classifyEyebrows(frontalLandmarks, frontalProc.canvas, frontalProc.ctx),
             barba: barbaMustata.barba,
             mustata: barbaMustata.mustata,
-            // Urechile nu se detectează automat
-            urechi: null,
+            urechi: null, // nu pot fi determinate automat
             semneParticulare: ""
         };
         currentResults = results;
@@ -656,9 +639,10 @@ function renderResults(results) {
         makeTextValue("Tipul mustății", results.mustata || "Fără mustață")
     ]));
 
-    // Urechile nu sunt incluse deoarece nu pot fi detectate automat
-    // (MediaPipe nu are landmark-uri pentru urechi). Mențiunea este adăugată
-    // în cardul informativ de fiabilitate.
+    // Urechile nu pot fi determinate automat
+    grid.appendChild(createCard("👂", "Urechile", [
+        makeTextValue("Detalii", "Nu pot fi determinate automat")
+    ]));
 
     grid.appendChild(createCard("⭐", "Semne particulare", [
         makeTextValue("Tatuaje, cicatrici etc.", results.semneParticulare || "Nespecificate")
@@ -788,7 +772,6 @@ function renderSavedList() {
 }
 
 function loadSavedData(data) {
-    // Normalizări minime
     if (!data.urechi) data.urechi = null;
     if (!data.sprancene) data.sprancene = [];
     if (typeof data.nas === "string") data.nas = { tip: data.nas };
