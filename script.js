@@ -1,11 +1,11 @@
 // ============================================================
-// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v9, corectat)
+// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v10, cu fix urechi)
 // ============================================================
 // Modificări:
-// - OpenCV.js se încarcă corect, așteptând inițializarea runtime-ului.
-// - Estimarea vârstei funcționează (analiza ridurilor cu OpenCV).
-// - Detecția urechilor folosește OpenCV, cu orientare corectă.
-// - Semnele particulare au casetă de introducere manuală.
+// - detectEars are acum fallback geometric care returnează
+//   formă și mărime estimate chiar dacă OpenCV.js lipsește.
+// - Lobul urechii rămâne „Nedeterminat” (nu poate fi dedus
+//   fără analiză de imagine detaliată).
 // ============================================================
 
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
@@ -185,7 +185,7 @@ function getSideLandmarks(landmarks, side) {
 }
 
 // ============================================================
-// ÎNCĂRCARE DINAMICĂ OPENCV.JS (cu așteptare runtime)
+// ÎNCĂRCARE DINAMICĂ OPENCV.JS
 // ============================================================
 function loadOpenCV() {
     return new Promise((resolve, reject) => {
@@ -197,7 +197,6 @@ function loadOpenCV() {
         script.src = OPENCV_URL;
         script.async = true;
         script.onload = () => {
-            // OpenCV.js are un runtime asincron; așteptăm inițializarea
             const checkReady = () => {
                 if (window.cv && window.cv.Mat) {
                     opencvReady = true;
@@ -604,116 +603,124 @@ function classifyBeardAndMustache(landmarks, canvas, ctx) {
 }
 
 // ============================================================
-// DETECȚIA URECHEI (euristică, bazată pe OpenCV.js)
+// DETECȚIA URECHEI – CU FALLBACK GEOMETRIC
 // ============================================================
-async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHeight) {
-    if (!window.cv || !opencvReady) {
-        console.warn("OpenCV.js nu este disponibil. Detecția urechii este dezactivată.");
-        return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
-    }
-
-    const canvas = profileImageData.canvas;
-
+function geometricEarEstimate(profileLandmarks, faceHeight) {
     const side = detectProfileSide(profileLandmarks);
     const { temple, jaw, cheekbone } = getSideLandmarks(profileLandmarks, side);
-
     if (!temple || !jaw || !cheekbone) {
         return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
     }
-
-    const centerX = (temple.x + jaw.x) / 2;
-    const centerY = (temple.y + cheekbone.y) / 2;
-    const earWidth = Math.abs(temple.x - jaw.x) * 1.8;
-    const earHeight = Math.abs(temple.y - jaw.y) * 2.2;
-
-    const left = clamp(centerX - earWidth / 2, 0.05, 0.95);
-    const right = clamp(centerX + earWidth / 2, 0.05, 0.95);
-    const top = clamp(centerY - earHeight / 2, 0.02, 0.85);
-    const bottom = clamp(centerY + earHeight / 2, 0.1, 0.95);
-
-    const pxLeft = Math.round(left * canvas.width);
-    const pxRight = Math.round(right * canvas.width);
-    const pxTop = Math.round(top * canvas.height);
-    const pxBottom = Math.round(bottom * canvas.height);
-    const roiWidth = pxRight - pxLeft;
-    const roiHeight = pxBottom - pxTop;
-
-    if (roiWidth < 20 || roiHeight < 20) return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
-
-    const roiCanvas = document.createElement("canvas");
-    roiCanvas.width = roiWidth;
-    roiCanvas.height = roiHeight;
-    const roiCtx = roiCanvas.getContext("2d");
-    roiCtx.drawImage(canvas, pxLeft, pxTop, roiWidth, roiHeight, 0, 0, roiWidth, roiHeight);
-
-    const src = cv.imread(roiCanvas);
-    const gray = new cv.Mat();
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
-
-    const edges = new cv.Mat();
-    cv.Canny(gray, edges, 50, 150);
-
-    const contours = new cv.MatVector();
-    const hierarchy = new cv.Mat();
-    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-    let forma = "Nedeterminată";
-    let marime = "Nedeterminată";
-    let lob = "Nedeterminat";
-
-    const extractedMats = [];
-    let bestContour = null;
-    let bestRect = null;
-    let maxArea = 0;
-
-    for (let i = 0; i < contours.size(); i++) {
-        const contour = contours.get(i);
-        extractedMats.push(contour);
-        const area = cv.contourArea(contour);
-        if (area > maxArea && area > 100) {
-            maxArea = area;
-            bestContour = contour;
-        }
+    // Estimare geometrică simplă: urechea se află între tâmplă și maxilar,
+    // înălțimea aproximată din diferența de Y, lățimea din diferența de X.
+    const height = Math.abs(temple.y - jaw.y) * 2.2;
+    const width = Math.abs(temple.x - jaw.x) * 1.8;
+    if (height < 0.01 || width < 0.01) {
+        return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
     }
+    const aspectRatio = height / width;
+    const relativeHeight = height / faceHeight;
 
-    if (bestContour) {
-        const rect = cv.boundingRect(bestContour);
-        bestRect = rect;
-        const aspectRatio = rect.height / rect.width;
-        const relativeHeight = rect.height / faceHeight;
+    let forma;
+    if (aspectRatio > 1.8) forma = "Dreptunghiulară";
+    else if (aspectRatio > 1.4) forma = "Ovală";
+    else if (aspectRatio > 1.0) forma = "Rotundă";
+    else if (aspectRatio > 0.7) forma = "Triunghiulară";
+    else forma = "Neregulată";
 
-        if (aspectRatio > 1.8) forma = "Dreptunghiulară";
-        else if (aspectRatio > 1.4) forma = "Ovală";
-        else if (aspectRatio > 1.0) forma = "Rotundă";
-        else if (aspectRatio > 0.7) forma = "Triunghiulară";
-        else forma = "Neregulată";
+    let marime;
+    if (relativeHeight < 0.22) marime = "Mici";
+    else if (relativeHeight > 0.32) marime = "Mari";
+    else marime = "Medii";
 
-        if (relativeHeight < 0.22) marime = "Mici";
-        else if (relativeHeight > 0.32) marime = "Mari";
-        else marime = "Medii";
+    // Lobul nu poate fi determinat geometric
+    return { forma, marime, lob: "Nedeterminat" };
+}
 
-        const roiLowerY = roiHeight * 0.6;
-        let lowerContourCount = 0;
-        for (const c of extractedMats) {
-            const r = cv.boundingRect(c);
-            if (r.y > roiLowerY && r.height > roiHeight * 0.1) {
-                lowerContourCount++;
+async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHeight) {
+    // Dacă OpenCV este disponibil, încercăm detecția pe contururi
+    if (window.cv && opencvReady) {
+        try {
+            const canvas = profileImageData.canvas;
+            const side = detectProfileSide(profileLandmarks);
+            const { temple, jaw, cheekbone } = getSideLandmarks(profileLandmarks, side);
+            if (temple && jaw && cheekbone) {
+                const centerX = (temple.x + jaw.x) / 2;
+                const centerY = (temple.y + cheekbone.y) / 2;
+                const earWidth = Math.abs(temple.x - jaw.x) * 1.8;
+                const earHeight = Math.abs(temple.y - jaw.y) * 2.2;
+                const left = clamp(centerX - earWidth / 2, 0.05, 0.95);
+                const right = clamp(centerX + earWidth / 2, 0.05, 0.95);
+                const top = clamp(centerY - earHeight / 2, 0.02, 0.85);
+                const bottom = clamp(centerY + earHeight / 2, 0.1, 0.95);
+                const pxLeft = Math.round(left * canvas.width);
+                const pxRight = Math.round(right * canvas.width);
+                const pxTop = Math.round(top * canvas.height);
+                const pxBottom = Math.round(bottom * canvas.height);
+                const roiWidth = pxRight - pxLeft;
+                const roiHeight = pxBottom - pxTop;
+                if (roiWidth >= 20 && roiHeight >= 20) {
+                    const roiCanvas = document.createElement("canvas");
+                    roiCanvas.width = roiWidth;
+                    roiCanvas.height = roiHeight;
+                    const roiCtx = roiCanvas.getContext("2d");
+                    roiCtx.drawImage(canvas, pxLeft, pxTop, roiWidth, roiHeight, 0, 0, roiWidth, roiHeight);
+                    const src = cv.imread(roiCanvas);
+                    const gray = new cv.Mat();
+                    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+                    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+                    const edges = new cv.Mat();
+                    cv.Canny(gray, edges, 50, 150);
+                    const contours = new cv.MatVector();
+                    const hierarchy = new cv.Mat();
+                    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+                    const extractedMats = [];
+                    let bestContour = null;
+                    let maxArea = 0;
+                    for (let i = 0; i < contours.size(); i++) {
+                        const contour = contours.get(i);
+                        extractedMats.push(contour);
+                        const area = cv.contourArea(contour);
+                        if (area > maxArea && area > 100) {
+                            maxArea = area;
+                            bestContour = contour;
+                        }
+                    }
+                    if (bestContour) {
+                        const rect = cv.boundingRect(bestContour);
+                        const aspectRatio = rect.height / rect.width;
+                        const relativeHeight = rect.height / faceHeight;
+                        let forma, marime;
+                        if (aspectRatio > 1.8) forma = "Dreptunghiulară";
+                        else if (aspectRatio > 1.4) forma = "Ovală";
+                        else if (aspectRatio > 1.0) forma = "Rotundă";
+                        else if (aspectRatio > 0.7) forma = "Triunghiulară";
+                        else forma = "Neregulată";
+                        if (relativeHeight < 0.22) marime = "Mici";
+                        else if (relativeHeight > 0.32) marime = "Mari";
+                        else marime = "Medii";
+                        let lob = "Atașat";
+                        const roiLowerY = roiHeight * 0.6;
+                        let lowerContourCount = 0;
+                        for (const c of extractedMats) {
+                            const r = cv.boundingRect(c);
+                            if (r.y > roiLowerY && r.height > roiHeight * 0.1) lowerContourCount++;
+                        }
+                        lob = lowerContourCount > 1 ? "Liber" : "Atașat";
+                        for (const mat of extractedMats) mat.delete();
+                        src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+                        return { forma, marime, lob };
+                    }
+                    for (const mat of extractedMats) mat.delete();
+                    src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+                }
             }
+        } catch (err) {
+            console.warn("Eroare la detecția OpenCV a urechii, folosim fallback geometric:", err);
         }
-        lob = lowerContourCount > 1 ? "Liber" : "Atașat";
     }
-
-    for (const mat of extractedMats) {
-        mat.delete();
-    }
-    src.delete();
-    gray.delete();
-    edges.delete();
-    contours.delete();
-    hierarchy.delete();
-
-    return { forma, marime, lob };
+    // Fallback geometric dacă OpenCV nu este disponibil sau conturul nu a fost găsit
+    return geometricEarEstimate(profileLandmarks, faceHeight);
 }
 
 // ============================================================
@@ -721,12 +728,9 @@ async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHei
 // ============================================================
 function estimateAge(landmarks, canvas, ctx, hairResult) {
     let ageRange = "Nedeterminată";
-
-    // Dacă părul este cărunt, presupunem automat vârstă mai mare
     if (hairResult && (hairResult.culoare === "Cărunt" || hairResult.culoare === "Alb")) {
         return "50-70";
     }
-
     if (window.cv && opencvReady) {
         try {
             const browY = (landmarks[LM.RIGHT_BROW_TOP].y + landmarks[LM.LEFT_BROW_TOP].y) / 2;
@@ -740,44 +744,32 @@ function estimateAge(landmarks, canvas, ctx, hairResult) {
             const leftEyeOuter = landmarks[LM.LEFT_EYE_OUTER];
             const rightEyeOuter = landmarks[LM.RIGHT_EYE_OUTER];
             const eyeRegionSize = 0.12;
-
             const regions = [
                 foreheadRegion,
                 { x: leftEyeOuter.x - eyeRegionSize / 2, y: leftEyeOuter.y - eyeRegionSize / 2, w: eyeRegionSize, h: eyeRegionSize },
                 { x: rightEyeOuter.x - eyeRegionSize / 2, y: rightEyeOuter.y - eyeRegionSize / 2, w: eyeRegionSize, h: eyeRegionSize }
             ];
-
-            let totalEdges = 0;
-            let totalPixels = 0;
-
+            let totalEdges = 0, totalPixels = 0;
             for (const region of regions) {
                 const x = Math.round(region.x * canvas.width);
                 const y = Math.round(region.y * canvas.height);
                 const w = Math.round(region.w * canvas.width);
                 const h = Math.round(region.h * canvas.height);
                 if (x < 0 || y < 0 || w < 1 || h < 1) continue;
-
                 const roiCanvas = document.createElement("canvas");
                 roiCanvas.width = w;
                 roiCanvas.height = h;
                 roiCanvas.getContext("2d").drawImage(canvas, x, y, w, h, 0, 0, w, h);
-
                 const src = cv.imread(roiCanvas);
                 const gray = new cv.Mat();
                 cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
                 cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
                 const edges = new cv.Mat();
                 cv.Canny(gray, edges, 50, 150);
-
-                const nonZero = cv.countNonZero(edges);
-                totalEdges += nonZero;
+                totalEdges += cv.countNonZero(edges);
                 totalPixels += w * h;
-
-                src.delete();
-                gray.delete();
-                edges.delete();
+                src.delete(); gray.delete(); edges.delete();
             }
-
             if (totalPixels > 0) {
                 const edgeDensity = totalEdges / totalPixels;
                 if (edgeDensity > 0.15) ageRange = "45-60";
@@ -786,10 +778,8 @@ function estimateAge(landmarks, canvas, ctx, hairResult) {
             }
         } catch (err) {
             console.warn("Eroare la estimarea vârstei:", err);
-            ageRange = "Nedeterminată";
         }
     }
-
     return ageRange;
 }
 
@@ -800,21 +790,15 @@ async function runAnalysis() {
     const statusEl = document.getElementById("status");
     statusEl.className = "status info";
     statusEl.textContent = "⏳ Se procesează imaginile...";
-
     const btn = document.getElementById("btn-analyze");
     btn.disabled = true;
     document.getElementById("analyze-spinner").style.display = "inline-block";
     document.getElementById("analyze-text").textContent = "Se analizează...";
-
-    let frontalProc = null;
-    let profilProc = null;
+    let frontalProc = null, profilProc = null;
 
     try {
-        // Încărcăm OpenCV.js în fundal (dacă nu este deja)
-        try {
-            await loadOpenCV();
-        } catch (cvError) {
-            console.warn("OpenCV.js nu a putut fi încărcat. Detecția urechii și estimarea vârstei vor fi dezactivate.");
+        try { await loadOpenCV(); } catch (cvError) {
+            console.warn("OpenCV.js nu a putut fi încărcat. Detecția urechii și estimarea vârstei vor folosi fallback.");
         }
 
         if (!frontalFile) throw new Error("Încarcă poza din față.");
@@ -832,32 +816,23 @@ async function runAnalysis() {
             try {
                 profilProc = await processImage(profilFile);
                 profilLandmarks = await extractLandmarks(profilProc);
-                if (!profilLandmarks) {
-                    console.warn("⚠️ Nu s-au detectat landmark-uri în poza de profil. Folosim doar analiza frontală.");
-                }
-            } catch (profilErr) {
-                console.warn("Eroare la procesarea pozei de profil:", profilErr);
-            }
+                if (!profilLandmarks) console.warn("⚠️ Nu s-au detectat landmark-uri în poza de profil. Folosim doar analiza frontală.");
+            } catch (profilErr) { console.warn("Eroare la procesarea pozei de profil:", profilErr); }
         }
 
         const faceWidth = distance(frontalLandmarks[LM.FACE_RIGHT_TEMPLE], frontalLandmarks[LM.FACE_LEFT_TEMPLE]);
         const faceHeight = distance(frontalLandmarks[LM.HAIRLINE_CENTER], frontalLandmarks[LM.CHIN]);
 
-        // Detecția urechilor (doar dacă avem profil)
         let urechi = { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
         if (profilProc && profilLandmarks) {
             try {
                 urechi = await detectEars(profilProc, profilLandmarks, faceWidth, faceHeight);
-            } catch (earErr) {
-                console.warn("Eroare la detecția urechii:", earErr);
-            }
+            } catch (earErr) { console.warn("Eroare la detecția urechii:", earErr); }
         }
 
         const barbaMustata = classifyBeardAndMustache(frontalLandmarks, frontalProc.canvas, frontalProc.ctx);
         const nas = classifyNose(frontalLandmarks, profilLandmarks);
         const par = classifyHair(frontalLandmarks, frontalProc.canvas, frontalProc.ctx);
-
-        // Estimarea vârstei
         const varsta = estimateAge(frontalLandmarks, frontalProc.canvas, frontalProc.ctx, par);
 
         const results = {
@@ -958,10 +933,10 @@ function renderResults(results) {
         makeTextValue("Mărimea urechii", results.urechi?.marime || "Nedeterminată"),
         makeTextValue("Lobul urechii", results.urechi?.lob || "Nedeterminat")
     ];
-    if (results.urechi?.forma === "Nedeterminată") {
+    if (results.urechi?.lob === "Nedeterminat") {
         const note = document.createElement("p");
         note.style.cssText = "font-size:0.75rem;color:var(--text-secondary);margin-top:4px;";
-        note.textContent = "ℹ️ Detecția urechii poate necesita poza de profil bună și resurse OpenCV.js. Dacă rezultatul este nedeterminat, verificați poza sau completați manual.";
+        note.textContent = "ℹ️ Lobul urechii nu poate fi determinat automat; celelalte caracteristici sunt estimate.";
         urechiFields.push(note);
     }
     grid.appendChild(createCard("👂", "Urechile", urechiFields));
@@ -995,7 +970,7 @@ function renderResults(results) {
             Categoriile geometrice (tip față, gură, frunte, sprâncene) au fiabilitate ridicată.
             Culoarea ochilor/părului este aproximativă (sampling de culoare). Tipul nasului
             este mult mai precis cu poza de profil inclusă. Barba/mustața sunt orientative.
-            Detecția urechilor și estimarea vârstei sunt experimentale și pot fi imprecise.
+            Detecția urechilor este experimentală, iar vârsta este estimată aproximativ.
         </p>
     `;
     grid.appendChild(infoCard);
@@ -1124,7 +1099,6 @@ function renderSavedList() {
 }
 
 function loadSavedData(data) {
-    // Normalizări minime
     if (!data.urechi) data.urechi = { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
     if (!data.sprancene) data.sprancene = [];
     if (typeof data.nas === "string") data.nas = { tip: data.nas };
