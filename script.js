@@ -1,11 +1,11 @@
 // ============================================================
-// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v15, cu urechi)
+// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v16, cu culoarea ochilor îmbunătățită)
 // ============================================================
-// - Bazat pe v14 (fără vârstă, fără OpenCV obligatoriu)
-// - Adăugat detecție urechi folosind OpenCV.js (opțional) și
-//   fallback geometric permanent.
-// - Păstrează toate îmbunătățirile de culoare (white balance),
-//   clasificatori calibrați.
+// Modificări:
+// - Adăugat conversia RGB->HSV pentru o clasificare mai precisă a culorii.
+// - Sampling de pixelii irisului folosind disc (nu bounding box).
+// - Clasificare separată pentru fiecare ochi și detectare heterocromie.
+// - Mediană robustă pentru culoare (reduce influența reflexiilor).
 // ============================================================
 
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
@@ -121,6 +121,30 @@ function rgbToHsl(r, g, b) {
     return { h: h * 360, s: s * 100, l: l * 100 };
 }
 
+// Funcție nouă: conversie RGB -> HSV
+function rgbToHsv(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    const d = max - min;
+    let h, s, v = max;
+    if (max === 0) {
+        s = 0;
+    } else {
+        s = d / max;
+    }
+    if (d === 0) {
+        h = 0;
+    } else {
+        switch (max) {
+            case r: h = ((g - b) / d) + (g < b ? 6 : 0); break;
+            case g: h = ((b - r) / d) + 2; break;
+            case b: h = ((r - g) / d) + 4; break;
+        }
+        h /= 6;
+    }
+    return { h: h * 360, s, v };
+}
+
 function classifyHairColor(avgDarkLum) {
     if (avgDarkLum < 40) return "Negru";
     if (avgDarkLum < 75) return "Șaten";
@@ -128,13 +152,24 @@ function classifyHairColor(avgDarkLum) {
     return "Cărunt";
 }
 
+// Îmbunătățit: folosește HSV pentru clasificare
 function classifyEyeColor(r, g, b) {
-    const { h, s, l } = rgbToHsl(r, g, b);
-    if (l < 20 && s < 20) return "Negri";
-    if (h >= 180 && h <= 260 && s > 10) return "Albaștri";
-    if (h >= 60 && h < 160 && s > 10) return "Verzi";
-    if ((h >= 10 && h < 50 && s > 15) || (l >= 20 && l < 60 && s > 20)) return "Căprui";
-    if (l > 60) return "Albaștri";
+    const { h, s, v } = rgbToHsv(r, g, b);
+    // Negri: valoare foarte mică
+    if (v < 0.2) return "Negri";
+    // Cenușii: saturație foarte scăzută, valoare medie/ridicată
+    if (s < 0.12 && v >= 0.2 && v <= 0.7) return "Cenușii";
+    if (s < 0.12 && v > 0.7) return "Albaștri"; // ochi foarte deschisi, poate fi albastru-gri
+    // Albaștri: nuanță în zona albastră (190-260) și saturație vizibilă
+    if (h >= 190 && h <= 260 && s > 0.15) return "Albaștri";
+    // Verzi: nuanță între 60 și 160, saturație vizibilă
+    if (h >= 60 && h <= 160 && s > 0.15) return "Verzi";
+    // Căprui: nuanță caldă (10-50) cu saturație suficientă
+    if (h >= 10 && h <= 50 && s > 0.2) return "Căprui";
+    // Căprui închis (maro) – poate avea saturație mai mică dar valoare medie
+    if (v < 0.5 && s < 0.4) return "Căprui";
+    // Fallback: dacă e deschis la culoare, presupunem albaștri
+    if (v > 0.6) return "Albaștri";
     return "Căprui";
 }
 
@@ -192,6 +227,35 @@ function samplePixelsAroundPoints(canvas, ctx, points, radiusPx = 3) {
         }
     }
     return samples;
+}
+
+// Funcție nouă: sampling dintr-un disc (pentru iris)
+function sampleDiscPixels(canvas, ctx, center, radius, normalizer) {
+    if (!center || !radius || radius <= 0) return [];
+    const cx = Math.round(center.x * canvas.width);
+    const cy = Math.round(center.y * canvas.height);
+    const r = Math.round(radius * canvas.width);
+    if (r < 1) return [];
+    const x0 = clamp(cx - r, 0, canvas.width - 1);
+    const y0 = clamp(cy - r, 0, canvas.height - 1);
+    const x1 = clamp(cx + r, 0, canvas.width - 1);
+    const y1 = clamp(cy + r, 0, canvas.height - 1);
+    if (x1 < x0 || y1 < y0) return [];
+    const imageData = ctx.getImageData(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    const data = imageData.data;
+    const samples = [];
+    const width = x1 - x0 + 1;
+    for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+            const dx = x - cx;
+            const dy = y - cy;
+            if (dx * dx + dy * dy <= r * r) {
+                const idx = ((y - y0) * width + (x - x0)) * 4;
+                samples.push({ r: data[idx], g: data[idx + 1], b: data[idx + 2] });
+            }
+        }
+    }
+    return samples.map(normalizer);
 }
 
 function luminance(c) { return (c.r + c.g + c.b) / 3; }
@@ -467,28 +531,54 @@ function classifyFaceType(landmarks) {
     return { tip, raport: ratio.toFixed(2), latimePometi: cheekboneW.toFixed(2), latimeMaxilar: jawW.toFixed(2) };
 }
 
-// ---------- Ochi ----------
+// ---------- Ochi (ÎMBUNĂTĂȚIT) ----------
 function classifyEyes(landmarks, canvas, ctx, faceWidth, normalizer) {
     const rEyeW = distance(landmarks[LM.RIGHT_EYE_OUTER], landmarks[LM.RIGHT_EYE_INNER]);
     const lEyeW = distance(landmarks[LM.LEFT_EYE_OUTER], landmarks[LM.LEFT_EYE_INNER]);
-    const avgEyeW = (rEyeW + lEyeW) / 2, eyeRatio = avgEyeW / faceWidth;
+    const avgEyeW = (rEyeW + lEyeW) / 2;
+    const eyeRatio = avgEyeW / faceWidth;
     let marime;
     if (eyeRatio < 0.15) marime = "Mici";
     else if (eyeRatio > 0.21) marime = "Mari";
     else marime = "Mijlocii";
 
-    let culoare = "Nedeterminată";
-    const irisPoints = [LM.RIGHT_IRIS_CENTER, LM.LEFT_IRIS_CENTER]
-        .filter(idx => idx < landmarks.length)
-        .map(idx => landmarks[idx]);
-    if (irisPoints.length > 0) {
-        const samples = samplePixelsAroundPoints(canvas, ctx, irisPoints, 2);
-        if (samples.length > 0) {
-            const normalized = samples.map(normalizer);
-            const avg = averageColor(normalized);
-            culoare = classifyEyeColor(avg.r, avg.g, avg.b);
+    // Estimează raza irisului ca fracțiune din lățimea ochiului
+    const irisRadiusR = rEyeW * 0.22;
+    const irisRadiusL = lEyeW * 0.22;
+
+    const irisCenterR = landmarks[LM.RIGHT_IRIS_CENTER];
+    const irisCenterL = landmarks[LM.LEFT_IRIS_CENTER];
+
+    let culoareR = "Nedeterminată";
+    let culoareL = "Nedeterminată";
+
+    if (irisCenterR) {
+        const samplesR = sampleDiscPixels(canvas, ctx, irisCenterR, irisRadiusR, normalizer);
+        if (samplesR.length > 0) {
+            const med = medianColor(samplesR);
+            culoareR = classifyEyeColor(med.r, med.g, med.b);
         }
     }
+
+    if (irisCenterL) {
+        const samplesL = sampleDiscPixels(canvas, ctx, irisCenterL, irisRadiusL, normalizer);
+        if (samplesL.length > 0) {
+            const med = medianColor(samplesL);
+            culoareL = classifyEyeColor(med.r, med.g, med.b);
+        }
+    }
+
+    let culoare;
+    if (culoareR !== "Nedeterminată" && culoareL !== "Nedeterminată" && culoareR !== culoareL) {
+        culoare = "Ceacâr (heterocromie)";
+    } else if (culoareR !== "Nedeterminată") {
+        culoare = culoareR;
+    } else if (culoareL !== "Nedeterminată") {
+        culoare = culoareL;
+    } else {
+        culoare = "Nedeterminată";
+    }
+
     return { culoare, marime, raportOchi: eyeRatio.toFixed(2) };
 }
 
