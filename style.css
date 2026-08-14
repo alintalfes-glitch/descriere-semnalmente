@@ -1,6 +1,7 @@
 /* ============================================================
    STILURI APLICAȚIE ANALIZĂ FACIALĂ – style.css
-   Versiune completă, cu utilitare de accesibilitate.
+   Versiune completă, cu utilitare de accesibilitate și
+   stil pentru afișarea valorilor detectate automat.
    ============================================================ */
 
 /* ---------- Variabile globale ---------- */
@@ -361,6 +362,14 @@ header p {
     accent-color: var(--accent);
     width: 16px;
     height: 16px;
+}
+
+/* ---------- Text „Detectat” lângă dropdown/checkbox ---------- */
+.detected-value {
+    font-size: 0.75rem;
+    color: var(--accent);
+    margin-top: 2px;
+    font-weight: 500;
 }
 
 /* ---------- Lista fișelor salvate ---------- */
