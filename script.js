@@ -1,5 +1,5 @@
 // ============================================================
-// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v5, corectat)
+// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v6, cu detecție urechi)
 // ============================================================
 
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
@@ -9,13 +9,20 @@ const MODEL_URL =
 const WASM_PATH =
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 
+// URL pentru OpenCV.js (folosit pentru detecția urechii)
+const OPENCV_URL = "https://docs.opencv.org/4.8.0/opencv.js";
+
 let faceLandmarker = null;
 let currentResults = null;
 let objectUrls = [];
 let frontalFile = null;
 let profilFile = null;
 let noseUsedProfile = false;
+let opencvReady = false; // devine true după încărcarea OpenCV.js
 
+// ============================================================
+// INDICI LANDMARK-URI MEDIAPIPE FACE MESH (esențiali)
+// ============================================================
 const LM = {
     FACE_RIGHT_TEMPLE: 234,
     FACE_LEFT_TEMPLE: 454,
@@ -56,8 +63,13 @@ const LM = {
     RIGHT_CHEEK_SKIN: 116,
     LEFT_CHEEK_SKIN: 345,
     FOREHEAD_SKIN: 8,
+    // Aproximări pentru ureche (stânga/dreapta în profil)
+    EAR_REGION_CENTER: 130, // nu există real, folosit doar ca referință
 };
 
+// ============================================================
+// FUNCȚII UTILITARE
+// ============================================================
 function distance(a, b) {
     return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
 }
@@ -121,17 +133,14 @@ function samplePixelsAroundPoints(canvas, ctx, points, radiusPx = 3) {
         maxY = Math.max(maxY, py + radiusPx);
         return { px, py };
     });
-
     minX = clamp(minX, 0, canvas.width - 1);
     minY = clamp(minY, 0, canvas.height - 1);
     maxX = clamp(maxX, 0, canvas.width - 1);
     maxY = clamp(maxY, 0, canvas.height - 1);
     const boxW = Math.max(1, maxX - minX + 1);
     const boxH = Math.max(1, maxY - minY + 1);
-
     const imageData = ctx.getImageData(minX, minY, boxW, boxH);
     const data = imageData.data;
-
     const samples = [];
     for (const { px, py } of pxPoints) {
         for (let dx = -radiusPx; dx <= radiusPx; dx++) {
@@ -148,6 +157,32 @@ function samplePixelsAroundPoints(canvas, ctx, points, radiusPx = 3) {
 
 function luminance(c) { return (c.r + c.g + c.b) / 3; }
 
+// ============================================================
+// ÎNCĂRCARE DINAMICĂ OPENCV.JS
+// ============================================================
+function loadOpenCV() {
+    return new Promise((resolve, reject) => {
+        if (opencvReady && window.cv) {
+            resolve();
+            return;
+        }
+        const script = document.createElement("script");
+        script.src = OPENCV_URL;
+        script.async = true;
+        script.onload = () => {
+            opencvReady = true;
+            resolve();
+        };
+        script.onerror = () => {
+            reject(new Error("Nu s-a putut încărca OpenCV.js."));
+        };
+        document.head.appendChild(script);
+    });
+}
+
+// ============================================================
+// INIȚIALIZARE MEDIAPIPE FACE LANDMARKER
+// ============================================================
 async function initFaceLandmarker() {
     try {
         const filesetResolver = await FilesetResolver.forVisionTasks(WASM_PATH);
@@ -174,6 +209,9 @@ async function initFaceLandmarker() {
     }
 }
 
+// ============================================================
+// GESTIONARE UPLOAD IMAGINI
+// ============================================================
 function setupUploadZone(zoneId, fileInputId, previewId, removeBtnId, callback) {
     const zone = document.getElementById(zoneId);
     const fileInput = document.getElementById(fileInputId);
@@ -239,6 +277,9 @@ function checkAnalyzeButton() {
     text.textContent = frontalFile ? "🔬 Analizează fețele" : "📸 Încarcă poza din față";
 }
 
+// ============================================================
+// PROCESARE IMAGINE + EXTRAGERE LANDMARK-URI
+// ============================================================
 async function processImage(file) {
     return new Promise((resolve, reject) => {
         const img = new Image();
@@ -289,6 +330,9 @@ function purgeImageData(imageData) {
     } catch (err) { console.warn("Curățare imagine: eroare minoră ignorată:", err); }
 }
 
+// ============================================================
+// CLASIFICATORI PE CATEGORII (fără urechi)
+// ============================================================
 function classifyForehead(landmarks, faceWidth) {
     const hairline = landmarks[LM.HAIRLINE_CENTER];
     const browY = (landmarks[LM.RIGHT_BROW_TOP].y + landmarks[LM.LEFT_BROW_TOP].y) / 2;
@@ -515,18 +559,153 @@ function classifyBeardAndMustache(landmarks, canvas, ctx) {
 }
 
 // ============================================================
+// DETECȚIA URECHEI (euristică, bazată pe OpenCV.js)
+// ============================================================
+async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHeight) {
+    // Dacă nu avem OpenCV, returnăm indeterminat
+    if (!window.cv) {
+        console.warn("OpenCV.js nu este disponibil. Detecția urechii este dezactivată.");
+        return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
+    }
+
+    const canvas = profileImageData.canvas;
+    const ctx = profileImageData.ctx;
+
+    // Aproximăm regiunea urechii folosind landmark-urile feței (profil).
+    // Presupunem că urechea este plasată lateral, între tâmplă și maxilar.
+    const temple = profileLandmarks[LM.FACE_RIGHT_TEMPLE] || profileLandmarks[LM.FACE_LEFT_TEMPLE];
+    const jaw = profileLandmarks[LM.RIGHT_JAW] || profileLandmarks[LM.LEFT_JAW];
+    const cheekbone = profileLandmarks[LM.RIGHT_CHEEKBONE] || profileLandmarks[LM.LEFT_CHEEKBONE];
+
+    if (!temple || !jaw || !cheekbone) {
+        return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
+    }
+
+    // Definim bounding box aproximativ pentru ureche (în coordonate normalizate 0-1)
+    const centerX = (temple.x + jaw.x) / 2;
+    const centerY = (temple.y + cheekbone.y) / 2;
+    const earWidth = Math.abs(temple.x - jaw.x) * 1.8;
+    const earHeight = Math.abs(temple.y - jaw.y) * 2.2;
+
+    const left = clamp(centerX - earWidth / 2, 0.05, 0.95);
+    const right = clamp(centerX + earWidth / 2, 0.05, 0.95);
+    const top = clamp(centerY - earHeight / 2, 0.02, 0.85);
+    const bottom = clamp(centerY + earHeight / 2, 0.1, 0.95);
+
+    // Convertim în pixeli
+    const pxLeft = Math.round(left * canvas.width);
+    const pxRight = Math.round(right * canvas.width);
+    const pxTop = Math.round(top * canvas.height);
+    const pxBottom = Math.round(bottom * canvas.height);
+    const roiWidth = pxRight - pxLeft;
+    const roiHeight = pxBottom - pxTop;
+
+    if (roiWidth < 20 || roiHeight < 20) return { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
+
+    // Extragem regiunea de interes
+    const roiCanvas = document.createElement("canvas");
+    roiCanvas.width = roiWidth;
+    roiCanvas.height = roiHeight;
+    const roiCtx = roiCanvas.getContext("2d");
+    roiCtx.drawImage(canvas, pxLeft, pxTop, roiWidth, roiHeight, 0, 0, roiWidth, roiHeight);
+
+    // Convertim în Mat OpenCV
+    const src = cv.imread(roiCanvas);
+    const gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+
+    // Aplicăm Canny
+    const edges = new cv.Mat();
+    cv.Canny(gray, edges, 50, 150);
+
+    // Găsim contururi
+    const contours = new cv.MatVector();
+    const hierarchy = new cv.Mat();
+    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    let bestContour = null;
+    let maxArea = 0;
+    for (let i = 0; i < contours.size(); i++) {
+        const contour = contours.get(i);
+        const area = cv.contourArea(contour);
+        if (area > maxArea && area > 100) { // prag minim
+            maxArea = area;
+            bestContour = contour;
+        }
+    }
+
+    let forma = "Nedeterminată";
+    let marime = "Nedeterminată";
+    let lob = "Nedeterminat";
+
+    if (bestContour) {
+        const rect = cv.boundingRect(bestContour);
+        const aspectRatio = rect.height / rect.width;
+        const relativeHeight = rect.height / faceHeight;
+
+        // Forma pe baza raportului de aspect
+        if (aspectRatio > 1.8) forma = "Dreptunghiulară";
+        else if (aspectRatio > 1.4) forma = "Ovală";
+        else if (aspectRatio > 1.0) forma = "Rotundă";
+        else if (aspectRatio > 0.7) forma = "Triunghiulară";
+        else forma = "Neregulată";
+
+        // Mărime: raport înălțime ureche / înălțime față
+        if (relativeHeight < 0.22) marime = "Mici";
+        else if (relativeHeight > 0.32) marime = "Mari";
+        else marime = "Medii";
+
+        // Lob: încercăm să detectăm o separare în partea de jos
+        // Prin verificarea contururilor secundare în jumătatea inferioară a ROI
+        const lowerContours = [];
+        const roiLowerY = roiHeight * 0.6;
+        for (let i = 0; i < contours.size(); i++) {
+            const c = contours.get(i);
+            const r = cv.boundingRect(c);
+            if (r.y > roiLowerY && r.height > roiHeight * 0.1) {
+                lowerContours.push(c);
+            }
+        }
+        // Dacă găsim un contur separat în partea de jos, presupunem lob liber
+        if (lowerContours.length > 1) lob = "Liber";
+        else lob = "Atașat";
+    }
+
+    // Curățare memorie OpenCV
+    src.delete();
+    gray.delete();
+    edges.delete();
+    contours.delete();
+    hierarchy.delete();
+
+    return { forma, marime, lob };
+}
+
+// ============================================================
 // FLUX PRINCIPAL DE ANALIZĂ
 // ============================================================
 async function runAnalysis() {
     const statusEl = document.getElementById("status");
     statusEl.className = "status info";
     statusEl.textContent = "⏳ Se procesează imaginile...";
+
     const btn = document.getElementById("btn-analyze");
     btn.disabled = true;
     document.getElementById("analyze-spinner").style.display = "inline-block";
     document.getElementById("analyze-text").textContent = "Se analizează...";
-    let frontalProc = null, profilProc = null;
+
+    let frontalProc = null;
+    let profilProc = null;
+
     try {
+        // Încărcăm OpenCV.js în fundal (dacă nu este deja)
+        try {
+            await loadOpenCV();
+        } catch (cvError) {
+            console.warn("OpenCV.js nu a putut fi încărcat. Detecția urechii va fi dezactivată.");
+        }
+
         if (!frontalFile) throw new Error("Încarcă poza din față.");
         frontalProc = await processImage(frontalFile);
         const frontalLandmarks = await extractLandmarks(frontalProc);
@@ -536,19 +715,37 @@ async function runAnalysis() {
             purgeImageData(frontalProc);
             return;
         }
+
         let profilLandmarks = null;
         if (profilFile) {
             try {
                 profilProc = await processImage(profilFile);
                 profilLandmarks = await extractLandmarks(profilProc);
-                if (!profilLandmarks) console.warn("⚠️ Nu s-au detectat landmark-uri în poza de profil. Folosim doar analiza frontală.");
-            } catch (profilErr) { console.warn("Eroare la procesarea pozei de profil:", profilErr); }
+                if (!profilLandmarks) {
+                    console.warn("⚠️ Nu s-au detectat landmark-uri în poza de profil. Folosim doar analiza frontală.");
+                }
+            } catch (profilErr) {
+                console.warn("Eroare la procesarea pozei de profil:", profilErr);
+            }
         }
+
         const faceWidth = distance(frontalLandmarks[LM.FACE_RIGHT_TEMPLE], frontalLandmarks[LM.FACE_LEFT_TEMPLE]);
         const faceHeight = distance(frontalLandmarks[LM.HAIRLINE_CENTER], frontalLandmarks[LM.CHIN]);
+
+        // Detecția urechilor (doar dacă avem profil)
+        let urechi = { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
+        if (profilProc && profilLandmarks) {
+            try {
+                urechi = await detectEars(profilProc, profilLandmarks, faceWidth, faceHeight);
+            } catch (earErr) {
+                console.warn("Eroare la detecția urechii:", earErr);
+            }
+        }
+
         const barbaMustata = classifyBeardAndMustache(frontalLandmarks, frontalProc.canvas, frontalProc.ctx);
         const nas = classifyNose(frontalLandmarks, profilLandmarks);
         noseUsedProfile = nas.sursaAnaliza === "profil";
+
         const results = {
             frunte: classifyForehead(frontalLandmarks, faceWidth),
             nas: nas,
@@ -560,9 +757,10 @@ async function runAnalysis() {
             sprancene: classifyEyebrows(frontalLandmarks, frontalProc.canvas, frontalProc.ctx),
             barba: barbaMustata.barba,
             mustata: barbaMustata.mustata,
-            urechi: null, // nu pot fi determinate automat
+            urechi: urechi,
             semneParticulare: ""
         };
+
         currentResults = results;
         renderResults(results);
         document.getElementById("results-section").classList.add("visible");
@@ -639,10 +837,19 @@ function renderResults(results) {
         makeTextValue("Tipul mustății", results.mustata || "Fără mustață")
     ]));
 
-    // Urechile nu pot fi determinate automat
-    grid.appendChild(createCard("👂", "Urechile", [
-        makeTextValue("Detalii", "Nu pot fi determinate automat")
-    ]));
+    // Card urechi (cu rezultate detectate sau indeterminate)
+    const urechiFields = [
+        makeTextValue("Forma urechii", results.urechi?.forma || "Nedeterminată"),
+        makeTextValue("Mărimea urechii", results.urechi?.marime || "Nedeterminată"),
+        makeTextValue("Lobul urechii", results.urechi?.lob || "Nedeterminat")
+    ];
+    if (results.urechi?.forma === "Nedeterminată") {
+        const note = document.createElement("p");
+        note.style.cssText = "font-size:0.75rem;color:var(--text-secondary);margin-top:4px;";
+        note.textContent = "ℹ️ Detecția urechii poate necesita poza de profil bună și resurse OpenCV.js. Dacă rezultatul este nedeterminat, verificați poza sau completați manual.";
+        urechiFields.push(note);
+    }
+    grid.appendChild(createCard("👂", "Urechile", urechiFields));
 
     grid.appendChild(createCard("⭐", "Semne particulare", [
         makeTextValue("Tatuaje, cicatrici etc.", results.semneParticulare || "Nespecificate")
@@ -657,7 +864,7 @@ function renderResults(results) {
             Categoriile geometrice (tip față, gură, frunte, sprâncene) au fiabilitate ridicată.
             Culoarea ochilor/părului este aproximativă (sampling de culoare). Tipul nasului
             este mult mai precis cu poza de profil inclusă. Barba/mustața sunt orientative.
-            Urechile nu pot fi determinate automat din cauza limitărilor modelului de landmark-uri.
+            Detecția urechilor este experimentală și poate fi imprecisă. Verifică rezultatele.
         </p>
     `;
     grid.appendChild(infoCard);
@@ -772,7 +979,8 @@ function renderSavedList() {
 }
 
 function loadSavedData(data) {
-    if (!data.urechi) data.urechi = null;
+    // Normalizări minime
+    if (!data.urechi) data.urechi = { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
     if (!data.sprancene) data.sprancene = [];
     if (typeof data.nas === "string") data.nas = { tip: data.nas };
     if (!data.nas || typeof data.nas.tip !== "string") data.nas = { tip: "Drept" };
