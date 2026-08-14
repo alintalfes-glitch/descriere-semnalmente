@@ -79,11 +79,29 @@
         </div>
 
         <footer>
-            Aplicație demo – analiză facială locală. Rezultatele sunt orientative și trebuie verificate de un operator uman.
+            <p>&copy; <span id="current-year"></span> Alin Talfeș – <a href="https://wa.me/alin.talfes" target="_blank" rel="noopener noreferrer">Contact pe WhatsApp</a></p>
+            <p>Versiune: <span id="app-version">Încărcare...</span></p>
         </footer>
     </div>
 
     <!-- JavaScript extern (modul ES) -->
     <script type="module" src="script.js"></script>
+    <script>
+        // Setează anul curent în footer
+        document.getElementById('current-year').textContent = new Date().getFullYear();
+
+        // Încarcă versiunea din version.json și o afișează
+        fetch('version.json')
+            .then(response => {
+                if (!response.ok) throw new Error('Nu s-a putut citi version.json');
+                return response.json();
+            })
+            .then(data => {
+                document.getElementById('app-version').textContent = data.version || 'nedefinit';
+            })
+            .catch(() => {
+                document.getElementById('app-version').textContent = 'nedisponibil';
+            });
+    </script>
 </body>
 </html>
