@@ -1,29 +1,14 @@
 // ============================================================
 // APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v3, doar afișare)
-// Modul ES, 100% client-side.
-// Folosește MediaPipe Face Landmarker pentru extragerea
-// a 468+ landmark-uri faciale.
-//
-// MODIFICĂRI:
-// - Eliminate complet elementele de editare manuală (dropdown,
-//   checkbox, input text).
-// - Rezultatele detectate sunt afișate ca text clar.
-// - Salvarea/exportul folosesc obiectul currentResults direct.
 // ============================================================
 
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 
-// ============================================================
-// CONFIGURARE
-// ============================================================
 const MODEL_URL =
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 const WASM_PATH =
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 
-// ============================================================
-// STARE GLOBALĂ
-// ============================================================
 let faceLandmarker = null;
 let currentResults = null;
 let objectUrls = [];
@@ -31,50 +16,26 @@ let frontalFile = null;
 let profilFile = null;
 let noseUsedProfile = false;
 
-// ============================================================
-// OPȚIUNI PENTRU DROPDOWN-URI (păstrate pentru referință)
-// ============================================================
 const OPTIONS = {
     frunte: ["Îngustă", "Lată", "Proeminentă", "Înaltă", "Mijlocie", "Scundă", "Nedeterminată"],
-    nas: [
-        "Acvilin", "Concav", "Convex", "Coroiat", "Drept",
-        "Frânt jos", "Frânt sus", "Ondulat", "Rectiliniu", "Nedeterminat"
-    ],
-    ochiCuloare: [
-        "Albaștri", "Căprui", "Cenușii", "Negri", "Verzi",
-        "Ceacâr (heterocromie)", "Nedeterminată"
-    ],
+    nas: ["Acvilin", "Concav", "Convex", "Coroiat", "Drept", "Frânt jos", "Frânt sus", "Ondulat", "Rectiliniu", "Nedeterminat"],
+    ochiCuloare: ["Albaștri", "Căprui", "Cenușii", "Negri", "Verzi", "Ceacâr (heterocromie)", "Nedeterminată"],
     ochiMarime: ["Mici", "Mijlocii", "Mari", "Nedeterminată"],
     guraColturi: ["Colțuri coborâte", "Colțuri ridicate", "Liniară", "Nedeterminată"],
     guraMarime: ["Mare", "Mijlocie", "Mică", "Nedeterminată"],
-    barbie: [
-        "Alungită", "Ascuțită", "Bilobată", "Cu gropiță", "Dublă",
-        "Îngropată", "Normală", "Plată", "Proeminentă", "Nedeterminată"
-    ],
-    tipFata: [
-        "Dreptunghiulară", "Ascuțită", "Ovală", "Romboidă",
-        "Rotundă", "Pătrată", "Triunghiulară", "Nedeterminată"
-    ],
+    barbie: ["Alungită", "Ascuțită", "Bilobată", "Cu gropiță", "Dublă", "Îngropată", "Normală", "Plată", "Proeminentă", "Nedeterminată"],
+    tipFata: ["Dreptunghiulară", "Ascuțită", "Ovală", "Romboidă", "Rotundă", "Pătrată", "Triunghiulară", "Nedeterminată"],
     parCuloare: ["Negru", "Șaten", "Blond", "Roșcat", "Cărunt", "Nedeterminată"],
     parTextura: ["Ondulat", "Drept", "Creț", "Nedeterminată"],
     calvitie: ["Fără calviție", "Calviție frontală", "Calviție parietală", "Chelie totală", "Nedeterminată"],
     sprancene: ["Absente", "Arcuite", "Dese", "Drepte", "Pensate", "Rare", "Stufoase"],
-    barba: [
-        "Fără barbă", "Barbă scurtă", "Barbă medie", "Barbă lungă",
-        "Barbă tip cioc", "Barbă completă", "Nedeterminată"
-    ],
-    mustata: [
-        "Fără mustață", "Subțire", "Groasă", "Dreaptă",
-        "Cu colțurile ridicate", "Cu colțurile coborâte", "Nedeterminată"
-    ],
+    barba: ["Fără barbă", "Barbă scurtă", "Barbă medie", "Barbă lungă", "Barbă tip cioc", "Barbă completă", "Nedeterminată"],
+    mustata: ["Fără mustață", "Subțire", "Groasă", "Dreaptă", "Cu colțurile ridicate", "Cu colțurile coborâte", "Nedeterminată"],
     urechiForma: ["Ovală", "Rotundă", "Dreptunghiulară", "Triunghiulară", "Neregulată", "Nedeterminată"],
     urechiMarime: ["Mici", "Medii", "Mari", "Nedeterminată"],
     urechiLob: ["Atașat", "Liber", "Nedeterminat"],
 };
 
-// ============================================================
-// INDICI LANDMARK-URI MEDIAPIPE FACE MESH (esențiali)
-// ============================================================
 const LM = {
     FACE_RIGHT_TEMPLE: 234,
     FACE_LEFT_TEMPLE: 454,
@@ -117,9 +78,6 @@ const LM = {
     FOREHEAD_SKIN: 8,
 };
 
-// ============================================================
-// FUNCȚII UTILITARE GENERALE
-// ============================================================
 function distance(a, b) {
     return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
 }
@@ -130,33 +88,22 @@ function clamp(v, min, max) {
 
 function averageColor(colors) {
     if (!colors || colors.length === 0) return { r: 0, g: 0, b: 0 };
-    const sum = colors.reduce(
-        (acc, c) => {
-            acc.r += c.r;
-            acc.g += c.g;
-            acc.b += c.b;
-            return acc;
-        },
-        { r: 0, g: 0, b: 0 }
-    );
-    return {
-        r: sum.r / colors.length,
-        g: sum.g / colors.length,
-        b: sum.b / colors.length,
-    };
+    const sum = colors.reduce((acc, c) => {
+        acc.r += c.r;
+        acc.g += c.g;
+        acc.b += c.b;
+        return acc;
+    }, { r: 0, g: 0, b: 0 });
+    return { r: sum.r / colors.length, g: sum.g / colors.length, b: sum.b / colors.length };
 }
 
 function rgbToHsl(r, g, b) {
     r /= 255;
     g /= 255;
     b /= 255;
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
     let h, s, l = (max + min) / 2;
-
-    if (max === min) {
-        h = s = 0;
-    } else {
+    if (max === min) { h = s = 0; } else {
         const d = max - min;
         s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
         switch (max) {
@@ -186,13 +133,8 @@ function classifyColor(r, g, b) {
     return "Negru";
 }
 
-// ------------------------------------------------------------
-// Sampling optimizat: un singur getImageData pe un bounding box
-// în jurul unui set de puncte normalizate.
-// ------------------------------------------------------------
 function samplePixelsAroundPoints(canvas, ctx, points, radiusPx = 3) {
     if (!points || points.length === 0) return [];
-
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     const pxPoints = points.map((p) => {
         const px = clamp(Math.round(p.x * canvas.width), 0, canvas.width - 1);
@@ -203,17 +145,14 @@ function samplePixelsAroundPoints(canvas, ctx, points, radiusPx = 3) {
         maxY = Math.max(maxY, py + radiusPx);
         return { px, py };
     });
-
     minX = clamp(minX, 0, canvas.width - 1);
     minY = clamp(minY, 0, canvas.height - 1);
     maxX = clamp(maxX, 0, canvas.width - 1);
     maxY = clamp(maxY, 0, canvas.height - 1);
     const boxW = Math.max(1, maxX - minX + 1);
     const boxH = Math.max(1, maxY - minY + 1);
-
     const imageData = ctx.getImageData(minX, minY, boxW, boxH);
     const data = imageData.data;
-
     const samples = [];
     for (const { px, py } of pxPoints) {
         for (let dx = -radiusPx; dx <= radiusPx; dx++) {
@@ -228,25 +167,15 @@ function samplePixelsAroundPoints(canvas, ctx, points, radiusPx = 3) {
     return samples;
 }
 
-function luminance(c) {
-    return (c.r + c.g + c.b) / 3;
-}
+function luminance(c) { return (c.r + c.g + c.b) / 3; }
 
-// ============================================================
-// INIȚIALIZARE MEDIAPIPE FACE LANDMARKER
-// ============================================================
 async function initFaceLandmarker() {
     try {
         const filesetResolver = await FilesetResolver.forVisionTasks(WASM_PATH);
         faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
-            baseOptions: {
-                modelAssetPath: MODEL_URL,
-                delegate: "GPU",
-            },
-            runningMode: "IMAGE",
-            numFaces: 1,
-            outputFaceBlendshapes: false,
-            outputFacialTransformationMatrixes: false,
+            baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
+            runningMode: "IMAGE", numFaces: 1,
+            outputFaceBlendshapes: false, outputFacialTransformationMatrixes: false
         });
         console.log("✅ FaceLandmarker inițializat cu succes (GPU)");
     } catch (gpuError) {
@@ -254,14 +183,9 @@ async function initFaceLandmarker() {
         try {
             const filesetResolver = await FilesetResolver.forVisionTasks(WASM_PATH);
             faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
-                baseOptions: {
-                    modelAssetPath: MODEL_URL,
-                    delegate: "CPU",
-                },
-                runningMode: "IMAGE",
-                numFaces: 1,
-                outputFaceBlendshapes: false,
-                outputFacialTransformationMatrixes: false,
+                baseOptions: { modelAssetPath: MODEL_URL, delegate: "CPU" },
+                runningMode: "IMAGE", numFaces: 1,
+                outputFaceBlendshapes: false, outputFacialTransformationMatrixes: false
             });
             console.log("✅ FaceLandmarker inițializat cu CPU");
         } catch (cpuError) {
@@ -271,9 +195,6 @@ async function initFaceLandmarker() {
     }
 }
 
-// ============================================================
-// GESTIONARE UPLOAD IMAGINI
-// ============================================================
 function setupUploadZone(zoneId, fileInputId, previewId, removeBtnId, callback) {
     const zone = document.getElementById(zoneId);
     const fileInput = document.getElementById(fileInputId);
@@ -281,7 +202,6 @@ function setupUploadZone(zoneId, fileInputId, previewId, removeBtnId, callback) 
     const removeBtn = document.getElementById(removeBtnId);
 
     zone.addEventListener("click", () => fileInput.click());
-
     fileInput.addEventListener("change", (e) => {
         if (e.target.files.length > 0) {
             const file = e.target.files[0];
@@ -293,7 +213,6 @@ function setupUploadZone(zoneId, fileInputId, previewId, removeBtnId, callback) 
             callback(url, file);
         }
     });
-
     removeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         fileInput.value = "";
@@ -307,11 +226,7 @@ function setupUploadZone(zoneId, fileInputId, previewId, removeBtnId, callback) 
         removeBtn.classList.remove("visible");
         callback(null, null);
     });
-
-    zone.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        zone.classList.add("dragover");
-    });
+    zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.classList.add("dragover"); });
     zone.addEventListener("dragleave", () => zone.classList.remove("dragover"));
     zone.addEventListener("drop", (e) => {
         e.preventDefault();
@@ -330,26 +245,12 @@ function setupUploadZone(zoneId, fileInputId, previewId, removeBtnId, callback) 
 }
 
 function setupUploads() {
-    setupUploadZone(
-        "drop-frontal",
-        "file-frontal",
-        "preview-frontal",
-        "remove-frontal",
-        (url, file) => {
-            frontalFile = file;
-            checkAnalyzeButton();
-        }
-    );
-    setupUploadZone(
-        "drop-profil",
-        "file-profil",
-        "preview-profil",
-        "remove-profil",
-        (url, file) => {
-            profilFile = file;
-            checkAnalyzeButton();
-        }
-    );
+    setupUploadZone("drop-frontal", "file-frontal", "preview-frontal", "remove-frontal", (url, file) => {
+        frontalFile = file; checkAnalyzeButton();
+    });
+    setupUploadZone("drop-profil", "file-profil", "preview-profil", "remove-profil", (url, file) => {
+        profilFile = file; checkAnalyzeButton();
+    });
 }
 
 function checkAnalyzeButton() {
@@ -359,9 +260,6 @@ function checkAnalyzeButton() {
     text.textContent = frontalFile ? "🔬 Analizează fețele" : "📸 Încarcă poza din față";
 }
 
-// ============================================================
-// PROCESARE IMAGINE + EXTRAGERE LANDMARK-URI
-// ============================================================
 async function processImage(file) {
     return new Promise((resolve, reject) => {
         const img = new Image();
@@ -402,24 +300,16 @@ function purgeImageData(imageData) {
         if (imageData.canvas) {
             const ctx = imageData.canvas.getContext("2d");
             if (ctx) ctx.clearRect(0, 0, imageData.canvas.width, imageData.canvas.height);
-            imageData.canvas.width = 0;
-            imageData.canvas.height = 0;
+            imageData.canvas.width = 0; imageData.canvas.height = 0;
         }
-        if (imageData.image) {
-            imageData.image.src = "";
-        }
+        if (imageData.image) imageData.image.src = "";
         if (imageData.objectUrl) {
             URL.revokeObjectURL(imageData.objectUrl);
             objectUrls = objectUrls.filter((u) => u !== imageData.objectUrl);
         }
-    } catch (err) {
-        console.warn("Curățare imagine: eroare minoră ignorată:", err);
-    }
+    } catch (err) { console.warn("Curățare imagine: eroare minoră ignorată:", err); }
 }
 
-// ============================================================
-// CLASIFICATORI PE CATEGORII
-// ============================================================
 function classifyForehead(landmarks, faceWidth) {
     const hairline = landmarks[LM.HAIRLINE_CENTER];
     const browY = (landmarks[LM.RIGHT_BROW_TOP].y + landmarks[LM.LEFT_BROW_TOP].y) / 2;
@@ -428,22 +318,14 @@ function classifyForehead(landmarks, faceWidth) {
     const heightRatio = foreheadHeight / faceHeight;
     const foreheadWidth = distance(landmarks[LM.HAIRLINE_RIGHT], landmarks[LM.HAIRLINE_LEFT]);
     const widthRatio = foreheadWidth / faceWidth;
-
     let result = [];
     if (widthRatio < 0.72) result.push("Îngustă");
     else if (widthRatio > 0.85) result.push("Lată");
     else result.push("Mijlocie");
-
     if (heightRatio > 0.32) result.push("Înaltă");
     else if (heightRatio < 0.22) result.push("Scundă");
     else if (!result.includes("Mijlocie")) result.push("Mijlocie");
-
-    return {
-        tip: result[0] || "Mijlocie",
-        detalii: result.join(", "),
-        raportLatime: widthRatio.toFixed(2),
-        raportInaltime: heightRatio.toFixed(2),
-    };
+    return { tip: result[0] || "Mijlocie", detalii: result.join(", "), raportLatime: widthRatio.toFixed(2), raportInaltime: heightRatio.toFixed(2) };
 }
 
 function classifyFaceType(landmarks) {
@@ -451,11 +333,7 @@ function classifyFaceType(landmarks) {
     const cheekboneW = distance(landmarks[LM.FACE_RIGHT_TEMPLE], landmarks[LM.FACE_LEFT_TEMPLE]);
     const jawW = distance(landmarks[LM.RIGHT_JAW], landmarks[LM.LEFT_JAW]);
     const faceH = distance(landmarks[LM.HAIRLINE_CENTER], landmarks[LM.CHIN]);
-
-    const ratio = faceH / cheekboneW;
-    const jawRatio = jawW / cheekboneW;
-    const foreheadRatio = foreheadW / cheekboneW;
-
+    const ratio = faceH / cheekboneW, jawRatio = jawW / cheekboneW, foreheadRatio = foreheadW / cheekboneW;
     let tip;
     if (ratio > 1.45 && jawRatio < 0.75 && foreheadRatio > 0.85) tip = "Triunghiulară";
     else if (ratio > 1.45 && jawRatio < 0.75 && foreheadRatio < 0.80) tip = "Ascuțită";
@@ -465,30 +343,19 @@ function classifyFaceType(landmarks) {
     else if (ratio < 1.15 && foreheadRatio > 0.88 && jawRatio > 0.85) tip = "Pătrată";
     else if (ratio < 1.25) tip = "Rotundă";
     else tip = "Ovală";
-
-    return {
-        tip,
-        raport: ratio.toFixed(2),
-        latimePometi: cheekboneW.toFixed(2),
-        latimeMaxilar: jawW.toFixed(2),
-    };
+    return { tip, raport: ratio.toFixed(2), latimePometi: cheekboneW.toFixed(2), latimeMaxilar: jawW.toFixed(2) };
 }
 
 function classifyEyes(landmarks, canvas, ctx, faceWidth) {
     const rEyeW = distance(landmarks[LM.RIGHT_EYE_OUTER], landmarks[LM.RIGHT_EYE_INNER]);
     const lEyeW = distance(landmarks[LM.LEFT_EYE_OUTER], landmarks[LM.LEFT_EYE_INNER]);
-    const avgEyeW = (rEyeW + lEyeW) / 2;
-    const eyeRatio = avgEyeW / faceWidth;
-
+    const avgEyeW = (rEyeW + lEyeW) / 2, eyeRatio = avgEyeW / faceWidth;
     let marime;
     if (eyeRatio < 0.15) marime = "Mici";
     else if (eyeRatio > 0.21) marime = "Mari";
     else marime = "Mijlocii";
-
     let culoare = "Nedeterminată";
-    const irisPoints = [LM.RIGHT_IRIS_CENTER, LM.LEFT_IRIS_CENTER]
-        .filter((idx) => idx < landmarks.length)
-        .map((idx) => landmarks[idx]);
+    const irisPoints = [LM.RIGHT_IRIS_CENTER, LM.LEFT_IRIS_CENTER].filter(idx => idx < landmarks.length).map(idx => landmarks[idx]);
     const samples = samplePixelsAroundPoints(canvas, ctx, irisPoints, 2);
     if (samples.length > 0) {
         const avg = averageColor(samples);
@@ -507,17 +374,13 @@ function classifyMouth(landmarks, faceWidth) {
     if (mouthRatio < 0.30) marime = "Mică";
     else if (mouthRatio > 0.42) marime = "Mare";
     else marime = "Mijlocie";
-
-    const cornerR = landmarks[LM.MOUTH_RIGHT];
-    const cornerL = landmarks[LM.MOUTH_LEFT];
-    const cornerAvgY = (cornerR.y + cornerL.y) / 2;
-    const topY = landmarks[LM.MOUTH_TOP].y;
+    const cornerR = landmarks[LM.MOUTH_RIGHT], cornerL = landmarks[LM.MOUTH_LEFT];
+    const cornerAvgY = (cornerR.y + cornerL.y) / 2, topY = landmarks[LM.MOUTH_TOP].y;
     const diff = topY - cornerAvgY;
     let colturi;
     if (diff > 0.015) colturi = "Colțuri ridicate";
     else if (diff < -0.015) colturi = "Colțuri coborâte";
     else colturi = "Liniară";
-
     return { colturi, marime, raportGura: mouthRatio.toFixed(2) };
 }
 
@@ -528,7 +391,6 @@ function classifyChin(landmarks, faceWidth, canvas, ctx) {
     if (chinRatio < 0.18) tip = "Ascuțită";
     else if (chinRatio > 0.30) tip = "Plată";
     else tip = "Normală";
-
     if (canvas && ctx && LM.CHIN_CREASE < landmarks.length) {
         const samples = samplePixelsAroundPoints(canvas, ctx, [landmarks[LM.CHIN_CREASE]], 3);
         if (samples.length > 0) {
@@ -547,65 +409,51 @@ function classifyNose(landmarks, profileLandmarks) {
         const bridgeMid = profileLandmarks[LM.NOSE_BRIDGE_MID];
         const bridgeBot = profileLandmarks[LM.NOSE_BRIDGE_BOTTOM];
         const noseTip = profileLandmarks[LM.NOSE_TIP];
-
         if (bridgeTop && bridgeMid && bridgeBot && noseTip) {
             const expectedY = (bridgeTop.y + bridgeBot.y) / 2;
             const actualY = bridgeMid.y;
             const deviation = expectedY - actualY;
-            const dx = noseTip.x - bridgeBot.x;
-            const dy = noseTip.y - bridgeBot.y;
+            const dx = noseTip.x - bridgeBot.x, dy = noseTip.y - bridgeBot.y;
             const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-
             let tip;
             if (deviation > 0.02) tip = "Convex";
             else if (deviation < -0.02) tip = "Concav";
             else if (Math.abs(angle) < 20) tip = "Rectiliniu";
             else if (angle < -25) tip = "Acvilin";
             else tip = "Drept";
-
             return { tip, sursaAnaliza: "profil", precizieRedusa: false };
         }
     }
-
     const noseW = distance(landmarks[LM.RIGHT_NOSTRIL], landmarks[LM.LEFT_NOSTRIL]);
-    const noseTip = landmarks[LM.NOSE_TIP];
-    const noseBridge = landmarks[LM.NOSE_BRIDGE_TOP];
+    const noseTip = landmarks[LM.NOSE_TIP], noseBridge = landmarks[LM.NOSE_BRIDGE_TOP];
     const noseLen = distance(noseTip, noseBridge);
     let tip;
     if (noseLen < 0.12) tip = "Concav";
     else if (noseW > 0.09) tip = "Convex";
     else tip = "Drept";
-
     return { tip, sursaAnaliza: "frontal", precizieRedusa: true };
 }
 
 function classifyHair(landmarks, canvas, ctx) {
     const hairline = landmarks[LM.HAIRLINE_CENTER];
-    const hairlineR = landmarks[LM.HAIRLINE_RIGHT];
-    const hairlineL = landmarks[LM.HAIRLINE_LEFT];
+    const hairlineR = landmarks[LM.HAIRLINE_RIGHT], hairlineL = landmarks[LM.HAIRLINE_LEFT];
     const samplePoints = [
         { x: hairline.x, y: hairline.y - 0.08 },
         { x: hairlineR.x, y: hairlineR.y - 0.06 },
         { x: hairlineL.x, y: hairlineL.y - 0.06 },
         { x: hairline.x, y: hairline.y - 0.12 },
-    ].map((p) => ({ x: clamp(p.x, 0.05, 0.95), y: clamp(p.y, 0.02, 0.85) }));
-
+    ].map(p => ({ x: clamp(p.x, 0.05, 0.95), y: clamp(p.y, 0.02, 0.85) }));
     const samples = samplePixelsAroundPoints(canvas, ctx, samplePoints, 2);
-    let culoare = "Nedeterminată";
-    let textura = "Nedeterminată";
-    let calvitie = "Fără calviție";
-
+    let culoare = "Nedeterminată", textura = "Nedeterminată", calvitie = "Fără calviție";
     if (samples.length > 0) {
         const avg = averageColor(samples);
         culoare = classifyColor(avg.r, avg.g, avg.b);
-
         const lums = samples.map(luminance);
         const avgLum = lums.reduce((a, b) => a + b, 0) / lums.length;
         const variance = lums.reduce((acc, v) => acc + (v - avgLum) ** 2, 0) / lums.length;
         if (variance > 2500) textura = "Creț";
         else if (variance > 1200) textura = "Ondulat";
         else textura = "Drept";
-
         const skinSamples = samplePixelsAroundPoints(canvas, ctx, [landmarks[LM.FOREHEAD_SKIN]], 2);
         if (skinSamples.length > 0) {
             const skinLum = skinSamples.map(luminance).reduce((a, b) => a + b, 0) / skinSamples.length;
@@ -623,23 +471,16 @@ function classifyEyebrows(landmarks, canvas, ctx) {
     const leftBrowPts = [LM.LEFT_BROW_OUTER, LM.LEFT_BROW_TOP, LM.LEFT_BROW_INNER];
     let maxCurvature = 0;
     for (const pts of [rightBrowPts, leftBrowPts]) {
-        const outer = landmarks[pts[0]];
-        const top = landmarks[pts[1]];
-        const inner = landmarks[pts[2]];
+        const outer = landmarks[pts[0]], top = landmarks[pts[1]], inner = landmarks[pts[2]];
         const avgY = (outer.y + inner.y) / 2;
         const curvature = Math.abs(top.y - avgY);
         maxCurvature = Math.max(maxCurvature, curvature);
     }
     results.push(maxCurvature > 0.018 ? "Arcuite" : "Drepte");
-
-    const browPoints = [
-        LM.RIGHT_BROW_TOP, LM.LEFT_BROW_TOP,
-        LM.RIGHT_BROW_INNER, LM.RIGHT_BROW_OUTER,
-        LM.LEFT_BROW_INNER, LM.LEFT_BROW_OUTER,
-    ].map((idx) => landmarks[idx]);
+    const browPoints = [LM.RIGHT_BROW_TOP, LM.LEFT_BROW_TOP, LM.RIGHT_BROW_INNER, LM.RIGHT_BROW_OUTER, LM.LEFT_BROW_INNER, LM.LEFT_BROW_OUTER].map(idx => landmarks[idx]);
     const samples = samplePixelsAroundPoints(canvas, ctx, browPoints, 3);
     if (samples.length > 0) {
-        const darkCount = samples.filter((c) => luminance(c) < 100).length;
+        const darkCount = samples.filter(c => luminance(c) < 100).length;
         const density = darkCount / samples.length;
         if (density > 0.55) results.push("Dese");
         else if (density < 0.25) results.push("Rare");
@@ -650,13 +491,8 @@ function classifyEyebrows(landmarks, canvas, ctx) {
 
 function classifyBeardAndMustache(landmarks, canvas, ctx) {
     const skinSamples = samplePixelsAroundPoints(canvas, ctx, [landmarks[LM.RIGHT_CHEEK_SKIN]], 2);
-    const skinLum = skinSamples.length > 0
-        ? skinSamples.map(luminance).reduce((a, b) => a + b, 0) / skinSamples.length
-        : 150;
-
-    const chin = landmarks[LM.CHIN];
-    const rightJaw = landmarks[LM.RIGHT_JAW];
-    const leftJaw = landmarks[LM.LEFT_JAW];
+    const skinLum = skinSamples.length > 0 ? skinSamples.map(luminance).reduce((a, b) => a + b, 0) / skinSamples.length : 150;
+    const chin = landmarks[LM.CHIN], rightJaw = landmarks[LM.RIGHT_JAW], leftJaw = landmarks[LM.LEFT_JAW];
     const beardPoints = [];
     for (let t = 0; t <= 1; t += 0.2) {
         const x = rightJaw.x + (leftJaw.x - rightJaw.x) * t;
@@ -664,15 +500,11 @@ function classifyBeardAndMustache(landmarks, canvas, ctx) {
         beardPoints.push({ x: clamp(x, 0.05, 0.95), y: clamp(y, 0.1, 0.95) });
     }
     const beardSamples = samplePixelsAroundPoints(canvas, ctx, beardPoints, 2);
-    const beardDarkRatio = beardSamples.length > 0
-        ? beardSamples.filter((c) => luminance(c) < skinLum - 40).length / beardSamples.length
-        : 0;
-
+    const beardDarkRatio = beardSamples.length > 0 ? beardSamples.filter(c => luminance(c) < skinLum - 40).length / beardSamples.length : 0;
     let barba = "Fără barbă";
     if (beardDarkRatio > 0.55) barba = "Barbă completă";
     else if (beardDarkRatio > 0.35) barba = "Barbă medie";
     else if (beardDarkRatio > 0.18) barba = "Barbă scurtă";
-
     const mouthTop = landmarks[LM.MOUTH_TOP];
     const mustachePoints = [];
     for (let t = 0; t <= 1; t += 0.15) {
@@ -681,14 +513,10 @@ function classifyBeardAndMustache(landmarks, canvas, ctx) {
         mustachePoints.push({ x: clamp(x, 0.05, 0.95), y: clamp(y, 0.05, 0.95) });
     }
     const mustacheSamples = samplePixelsAroundPoints(canvas, ctx, mustachePoints, 2);
-    const mustacheDarkRatio = mustacheSamples.length > 0
-        ? mustacheSamples.filter((c) => luminance(c) < skinLum - 30).length / mustacheSamples.length
-        : 0;
-
+    const mustacheDarkRatio = mustacheSamples.length > 0 ? mustacheSamples.filter(c => luminance(c) < skinLum - 30).length / mustacheSamples.length : 0;
     let mustata = "Fără mustață";
     if (mustacheDarkRatio > 0.5) mustata = "Groasă";
     else if (mustacheDarkRatio > 0.3) mustata = "Subțire";
-
     return { barba, mustata };
 }
 
@@ -699,15 +527,11 @@ async function runAnalysis() {
     const statusEl = document.getElementById("status");
     statusEl.className = "status info";
     statusEl.textContent = "⏳ Se procesează imaginile...";
-
     const btn = document.getElementById("btn-analyze");
     btn.disabled = true;
     document.getElementById("analyze-spinner").style.display = "inline-block";
     document.getElementById("analyze-text").textContent = "Se analizează...";
-
-    let frontalProc = null;
-    let profilProc = null;
-
+    let frontalProc = null, profilProc = null;
     try {
         if (!frontalFile) throw new Error("Încarcă poza din față.");
         frontalProc = await processImage(frontalFile);
@@ -718,27 +542,19 @@ async function runAnalysis() {
             purgeImageData(frontalProc);
             return;
         }
-
         let profilLandmarks = null;
         if (profilFile) {
             try {
                 profilProc = await processImage(profilFile);
                 profilLandmarks = await extractLandmarks(profilProc);
-                if (!profilLandmarks) {
-                    console.warn("⚠️ Nu s-au detectat landmark-uri în poza de profil. Folosim doar analiza frontală.");
-                }
-            } catch (profilErr) {
-                console.warn("Eroare la procesarea pozei de profil:", profilErr);
-            }
+                if (!profilLandmarks) console.warn("⚠️ Nu s-au detectat landmark-uri în poza de profil. Folosim doar analiza frontală.");
+            } catch (profilErr) { console.warn("Eroare la procesarea pozei de profil:", profilErr); }
         }
-
         const faceWidth = distance(frontalLandmarks[LM.FACE_RIGHT_TEMPLE], frontalLandmarks[LM.FACE_LEFT_TEMPLE]);
         const faceHeight = distance(frontalLandmarks[LM.HAIRLINE_CENTER], frontalLandmarks[LM.CHIN]);
-
         const barbaMustata = classifyBeardAndMustache(frontalLandmarks, frontalProc.canvas, frontalProc.ctx);
         const nas = classifyNose(frontalLandmarks, profilLandmarks);
         noseUsedProfile = nas.sursaAnaliza === "profil";
-
         const results = {
             frunte: classifyForehead(frontalLandmarks, faceWidth),
             nas: nas,
@@ -751,9 +567,8 @@ async function runAnalysis() {
             barba: barbaMustata.barba,
             mustata: barbaMustata.mustata,
             urechi: { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" },
-            semneParticulare: "",
+            semneParticulare: ""
         };
-
         currentResults = results;
         renderResults(results);
         document.getElementById("results-section").classList.add("visible");
@@ -775,21 +590,17 @@ async function runAnalysis() {
 }
 
 // ============================================================
-// RENDERIZARE REZULTATE (afișare simplă, fără editare)
+// RENDERIZARE REZULTATE – AFIȘARE SIMPLĂ, FĂRĂ EDITARE
 // ============================================================
 function renderResults(results) {
     const grid = document.getElementById("results-grid");
     grid.innerHTML = "";
 
-    grid.appendChild(
-        createCard("👤", "Fruntea", [
-            makeTextValue("Tipul frunții", results.frunte?.tip || "Mijlocie"),
-        ])
-    );
+    grid.appendChild(createCard("👤", "Fruntea", [
+        makeTextValue("Tipul frunții", results.frunte?.tip || "Mijlocie")
+    ]));
 
-    const nasFields = [
-        makeTextValue("Tipul nasului", results.nas?.tip || "Drept"),
-    ];
+    const nasFields = [ makeTextValue("Tipul nasului", results.nas?.tip || "Drept") ];
     if (results.nas?.precizieRedusa) {
         const warn = document.createElement("p");
         warn.style.cssText = "font-size:0.75rem;color:#f0a020;margin-top:4px;";
@@ -798,71 +609,51 @@ function renderResults(results) {
     }
     grid.appendChild(createCard("👃", "Nasul", nasFields));
 
-    grid.appendChild(
-        createCard("👁️", "Ochii", [
-            makeTextValue("Culoarea ochilor", results.ochi?.culoare || "Căprui"),
-            makeTextValue("Mărimea ochilor", results.ochi?.marime || "Mijlocii"),
-        ])
-    );
+    grid.appendChild(createCard("👁️", "Ochii", [
+        makeTextValue("Culoarea ochilor", results.ochi?.culoare || "Căprui"),
+        makeTextValue("Mărimea ochilor", results.ochi?.marime || "Mijlocii")
+    ]));
 
-    grid.appendChild(
-        createCard("👄", "Gura", [
-            makeTextValue("Colțurile gurii", results.gura?.colturi || "Liniară"),
-            makeTextValue("Mărimea gurii", results.gura?.marime || "Mijlocie"),
-        ])
-    );
+    grid.appendChild(createCard("👄", "Gura", [
+        makeTextValue("Colțurile gurii", results.gura?.colturi || "Liniară"),
+        makeTextValue("Mărimea gurii", results.gura?.marime || "Mijlocie")
+    ]));
 
-    grid.appendChild(
-        createCard("🫦", "Bărbia", [
-            makeTextValue("Tipul bărbiei", results.barbie?.tip || "Normală"),
-        ])
-    );
+    grid.appendChild(createCard("🫦", "Bărbia", [
+        makeTextValue("Tipul bărbiei", results.barbie?.tip || "Normală")
+    ]));
 
-    grid.appendChild(
-        createCard("📐", "Tipul feței", [
-            makeTextValue("Forma feței", results.tipFata?.tip || "Ovală"),
-        ])
-    );
+    grid.appendChild(createCard("📐", "Tipul feței", [
+        makeTextValue("Forma feței", results.tipFata?.tip || "Ovală")
+    ]));
 
-    grid.appendChild(
-        createCard("💇", "Părul", [
-            makeTextValue("Culoarea părului", results.par?.culoare || "Șaten"),
-            makeTextValue("Textura părului", results.par?.textura || "Drept"),
-            makeTextValue("Calviția", results.par?.calvitie || "Fără calviție"),
-        ])
-    );
+    grid.appendChild(createCard("💇", "Părul", [
+        makeTextValue("Culoarea părului", results.par?.culoare || "Șaten"),
+        makeTextValue("Textura părului", results.par?.textura || "Drept"),
+        makeTextValue("Calviția", results.par?.calvitie || "Fără calviție")
+    ]));
 
-    grid.appendChild(
-        createCard("🖤", "Sprâncenele", [
-            makeTextValue("Caracteristici", results.sprancene ? results.sprancene.join(", ") : "Drepte"),
-        ])
-    );
+    grid.appendChild(createCard("🖤", "Sprâncenele", [
+        makeTextValue("Caracteristici", results.sprancene ? results.sprancene.join(", ") : "Drepte")
+    ]));
 
-    grid.appendChild(
-        createCard("🧔", "Barba", [
-            makeTextValue("Tipul bărbii", results.barba || "Fără barbă"),
-        ])
-    );
+    grid.appendChild(createCard("🧔", "Barba", [
+        makeTextValue("Tipul bărbii", results.barba || "Fără barbă")
+    ]));
 
-    grid.appendChild(
-        createCard("👨", "Mustața", [
-            makeTextValue("Tipul mustății", results.mustata || "Fără mustață"),
-        ])
-    );
+    grid.appendChild(createCard("👨", "Mustața", [
+        makeTextValue("Tipul mustății", results.mustata || "Fără mustață")
+    ]));
 
-    grid.appendChild(
-        createCard("👂", "Urechile", [
-            makeTextValue("Forma", results.urechi?.forma || "Nedeterminată"),
-            makeTextValue("Mărimea", results.urechi?.marime || "Nedeterminată"),
-            makeTextValue("Lobul", results.urechi?.lob || "Nedeterminat"),
-        ])
-    );
+    grid.appendChild(createCard("👂", "Urechile", [
+        makeTextValue("Forma", results.urechi?.forma || "Nedeterminată"),
+        makeTextValue("Mărimea", results.urechi?.marime || "Nedeterminată"),
+        makeTextValue("Lobul", results.urechi?.lob || "Nedeterminat")
+    ]));
 
-    grid.appendChild(
-        createCard("⭐", "Semne particulare", [
-            makeTextValue("Tatuaje, cicatrici etc.", results.semneParticulare || "Nespecificate"),
-        ])
-    );
+    grid.appendChild(createCard("⭐", "Semne particulare", [
+        makeTextValue("Tatuaje, cicatrici etc.", results.semneParticulare || "Nespecificate")
+    ]));
 
     const infoCard = document.createElement("div");
     infoCard.className = "result-card";
@@ -886,7 +677,7 @@ function createCard(emoji, title, fields) {
     titleEl.className = "card-title";
     titleEl.innerHTML = `<span class="emoji">${emoji}</span> ${title}`;
     card.appendChild(titleEl);
-    fields.forEach((f) => card.appendChild(f));
+    fields.forEach(f => card.appendChild(f));
     return card;
 }
 
@@ -905,7 +696,7 @@ function makeTextValue(labelText, value) {
 }
 
 // ============================================================
-// SALVARE LOCALSTORAGE + EXPORT
+// SALVARE / EXPORT
 // ============================================================
 function saveResults() {
     if (!currentResults) {
@@ -955,14 +746,10 @@ function renderSavedList() {
         container.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;">Nicio fișă salvată.</p>';
         return;
     }
-    keys.forEach((key) => {
+    keys.forEach(key => {
         const raw = localStorage.getItem(key);
         let parsed;
-        try {
-            parsed = JSON.parse(raw);
-        } catch {
-            parsed = { dataAnaliza: "necunoscută" };
-        }
+        try { parsed = JSON.parse(raw); } catch { parsed = { dataAnaliza: "necunoscută" }; }
         const item = document.createElement("div");
         item.className = "saved-item";
         const date = parsed.dataAnaliza ? new Date(parsed.dataAnaliza).toLocaleString("ro-RO") : "dată necunoscută";
@@ -992,7 +779,6 @@ function renderSavedList() {
 }
 
 function loadSavedData(data) {
-    // Normalizări minime în caz de date incomplete
     if (!data.urechi) data.urechi = { forma: "Nedeterminată", marime: "Nedeterminată", lob: "Nedeterminat" };
     if (!data.sprancene) data.sprancene = [];
     if (typeof data.nas === "string") data.nas = { tip: data.nas };
@@ -1006,7 +792,6 @@ function loadSavedData(data) {
     if (!data.barba) data.barba = "Fără barbă";
     if (!data.mustata) data.mustata = "Fără mustață";
     if (!data.semneParticulare) data.semneParticulare = "";
-
     currentResults = data;
     renderResults(data);
     document.getElementById("results-section").classList.add("visible");
@@ -1026,14 +811,14 @@ function resetAll() {
         document.getElementById("results-section").classList.remove("visible");
         document.getElementById("status").className = "status";
         document.getElementById("status").textContent = "";
-        ["frontal", "profil"].forEach((prefix) => {
+        ["frontal", "profil"].forEach(prefix => {
             const preview = document.getElementById(`preview-${prefix}`);
             preview.src = "";
             preview.classList.remove("visible");
             document.getElementById(`remove-${prefix}`).classList.remove("visible");
             document.getElementById(`file-${prefix}`).value = "";
         });
-        objectUrls.forEach((url) => URL.revokeObjectURL(url));
+        objectUrls.forEach(url => URL.revokeObjectURL(url));
         objectUrls = [];
         checkAnalyzeButton();
         renderSavedList();
@@ -1041,18 +826,16 @@ function resetAll() {
 }
 
 // ============================================================
-// INIȚIALIZARE APLICAȚIE
+// INIȚIALIZARE
 // ============================================================
 async function initApp() {
     setupUploads();
     checkAnalyzeButton();
     renderSavedList();
-
     document.getElementById("btn-analyze").addEventListener("click", runAnalysis);
     document.getElementById("btn-save").addEventListener("click", saveResults);
     document.getElementById("btn-export").addEventListener("click", exportResults);
     document.getElementById("btn-reset").addEventListener("click", resetAll);
-
     try {
         await initFaceLandmarker();
         console.log("🚀 Aplicație pregătită. Poți încărca imagini.");
