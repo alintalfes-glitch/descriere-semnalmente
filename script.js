@@ -1,12 +1,9 @@
 // ============================================================
-// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v12)
+// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v13)
 // ============================================================
-// Modificări față de v11:
-// - FIX: Fallback-ul geometric pentru urechi nu mai returnează
-//   „Nedeterminat” atunci când lățimea estimată din landmark-uri
-//   este aproape zero (situație normală în poza de profil).
-//   Acum se folosește o lățime minimă proporțională cu înălțimea
-//   feței, permițând estimarea formei și mărimii urechii.
+// Modificări față de v12:
+// - Eliminare emoji-uri din toate textele afișate și logate.
+// - Funcția createCard() nu mai primește emoji; se folosește doar titlul.
 // ============================================================
 
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
@@ -243,9 +240,9 @@ async function initFaceLandmarker() {
             runningMode: "IMAGE", numFaces: 1,
             outputFaceBlendshapes: false, outputFacialTransformationMatrixes: false
         });
-        console.log("✅ FaceLandmarker inițializat cu succes (GPU)");
+        console.log("FaceLandmarker inițializat cu succes (GPU)");
     } catch (gpuError) {
-        console.warn("⚠️ GPU delegate a eșuat, încerc CPU...", gpuError);
+        console.warn("GPU delegate a eșuat, încerc CPU...", gpuError);
         try {
             const filesetResolver = await FilesetResolver.forVisionTasks(WASM_PATH);
             faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
@@ -253,9 +250,9 @@ async function initFaceLandmarker() {
                 runningMode: "IMAGE", numFaces: 1,
                 outputFaceBlendshapes: false, outputFacialTransformationMatrixes: false
             });
-            console.log("✅ FaceLandmarker inițializat cu CPU");
+            console.log("FaceLandmarker inițializat cu CPU");
         } catch (cpuError) {
-            console.error("❌ Eroare la inițializarea FaceLandmarker:", cpuError);
+            console.error("Eroare la inițializarea FaceLandmarker:", cpuError);
             throw cpuError;
         }
     }
@@ -334,7 +331,7 @@ function checkAnalyzeButton() {
     const btn = document.getElementById("btn-analyze");
     btn.disabled = !frontalFile;
     const text = document.getElementById("analyze-text");
-    text.textContent = frontalFile ? "🔬 Analizează fețele" : "📸 Încarcă poza din față";
+    text.textContent = frontalFile ? "Analizează fețele" : "Încarcă poza din față";
 }
 
 // ============================================================
@@ -365,7 +362,7 @@ async function extractLandmarks(imageData) {
         if (result.faceLandmarks && result.faceLandmarks.length > 0) {
             const landmarks = result.faceLandmarks[0];
             if (landmarks.length >= 468) return landmarks;
-            console.warn("⚠️ Număr insuficient de landmark-uri:", landmarks.length);
+            console.warn("Număr insuficient de landmark-uri:", landmarks.length);
         }
         return null;
     } catch (err) {
@@ -836,7 +833,7 @@ function estimateAge(landmarks, canvas, ctx, hairResult) {
 async function runAnalysis() {
     const statusEl = document.getElementById("status");
     statusEl.className = "status info";
-    statusEl.textContent = "⏳ Se procesează imaginile...";
+    statusEl.textContent = "Se procesează imaginile...";
     const btn = document.getElementById("btn-analyze");
     btn.disabled = true;
     document.getElementById("analyze-spinner").style.display = "inline-block";
@@ -861,7 +858,7 @@ async function runAnalysis() {
         const frontalLandmarks = await extractLandmarks(frontalProc);
         if (!frontalLandmarks) {
             statusEl.className = "status error";
-            statusEl.textContent = "❌ Nu s-au putut detecta landmark-urile faciale în poza din față. Verifică încadrarea și claritatea.";
+            statusEl.textContent = "Nu s-au putut detecta landmark-urile faciale în poza din față. Verifică încadrarea și claritatea.";
             purgeImageData(frontalProc);
             return;
         }
@@ -871,7 +868,7 @@ async function runAnalysis() {
             try {
                 profilProc = await processImage(profilFile);
                 profilLandmarks = await extractLandmarks(profilProc);
-                if (!profilLandmarks) console.warn("⚠️ Nu s-au detectat landmark-uri în poza de profil. Folosim doar analiza frontală.");
+                if (!profilLandmarks) console.warn("Nu s-au detectat landmark-uri în poza de profil. Folosim doar analiza frontală.");
             } catch (profilErr) { console.warn("Eroare la procesarea pozei de profil:", profilErr); }
         }
 
@@ -910,18 +907,18 @@ async function runAnalysis() {
         renderResults(results);
         document.getElementById("results-section").classList.add("visible");
         statusEl.className = "status success";
-        statusEl.textContent = "✅ Analiza completă! Rezultatele detectate sunt afișate mai jos.";
+        statusEl.textContent = "Analiza completă! Rezultatele detectate sunt afișate mai jos.";
     } catch (err) {
         console.error("Eroare în analiză:", err);
         statusEl.className = "status error";
-        statusEl.textContent = "❌ Eroare: " + err.message;
+        statusEl.textContent = "Eroare: " + err.message;
     } finally {
         purgeImageData(frontalProc);
         purgeImageData(profilProc);
-        console.log("🔄 Datele de imagine au fost eliminate din canvas/memorie.");
+        console.log("Datele de imagine au fost eliminate din canvas/memorie.");
         btn.disabled = false;
         document.getElementById("analyze-spinner").style.display = "none";
-        document.getElementById("analyze-text").textContent = "🔬 Analizează fețele";
+        document.getElementById("analyze-text").textContent = "Analizează fețele";
         checkAnalyzeButton();
     }
 }
@@ -933,7 +930,7 @@ function renderResults(results) {
     const grid = document.getElementById("results-grid");
     grid.innerHTML = "";
 
-    grid.appendChild(createCard("👤", "Fruntea", [
+    grid.appendChild(createCard("Fruntea", [
         makeTextValue("Tipul frunții", results.frunte?.tip || "Mijlocie")
     ]));
 
@@ -941,44 +938,44 @@ function renderResults(results) {
     if (results.nas?.precizieRedusa) {
         const warn = document.createElement("p");
         warn.style.cssText = "font-size:0.75rem;color:#f0a020;margin-top:4px;";
-        warn.textContent = "⚠️ Analizat doar din poza frontală — fără poza din profil, precizia pentru forma nasului este redusă.";
+        warn.textContent = "Analizat doar din poza frontală — fără poza din profil, precizia pentru forma nasului este redusă.";
         nasFields.push(warn);
     }
-    grid.appendChild(createCard("👃", "Nasul", nasFields));
+    grid.appendChild(createCard("Nasul", nasFields));
 
-    grid.appendChild(createCard("👁️", "Ochii", [
+    grid.appendChild(createCard("Ochii", [
         makeTextValue("Culoarea ochilor", results.ochi?.culoare || "Căprui"),
         makeTextValue("Mărimea ochilor", results.ochi?.marime || "Mijlocii")
     ]));
 
-    grid.appendChild(createCard("👄", "Gura", [
+    grid.appendChild(createCard("Gura", [
         makeTextValue("Colțurile gurii", results.gura?.colturi || "Liniară"),
         makeTextValue("Mărimea gurii", results.gura?.marime || "Mijlocie")
     ]));
 
-    grid.appendChild(createCard("🫦", "Bărbia", [
+    grid.appendChild(createCard("Bărbia", [
         makeTextValue("Tipul bărbiei", results.barbie?.tip || "Normală")
     ]));
 
-    grid.appendChild(createCard("📐", "Tipul feței", [
+    grid.appendChild(createCard("Tipul feței", [
         makeTextValue("Forma feței", results.tipFata?.tip || "Ovală")
     ]));
 
-    grid.appendChild(createCard("💇", "Părul", [
+    grid.appendChild(createCard("Părul", [
         makeTextValue("Culoarea părului", results.par?.culoare || "Nedeterminată"),
         makeTextValue("Textura părului", results.par?.textura || "Nedeterminată"),
         makeTextValue("Calviția", results.par?.calvitie || "Fără calviție")
     ]));
 
-    grid.appendChild(createCard("🖤", "Sprâncenele", [
+    grid.appendChild(createCard("Sprâncenele", [
         makeTextValue("Caracteristici", results.sprancene ? results.sprancene.join(", ") : "Drepte")
     ]));
 
-    grid.appendChild(createCard("🧔", "Barba", [
+    grid.appendChild(createCard("Barba", [
         makeTextValue("Tipul bărbii", results.barba || "Fără barbă")
     ]));
 
-    grid.appendChild(createCard("👨", "Mustața", [
+    grid.appendChild(createCard("Mustața", [
         makeTextValue("Tipul mustății", results.mustata || "Fără mustață")
     ]));
 
@@ -991,13 +988,13 @@ function renderResults(results) {
     if (results.urechi?.lob === "Nedeterminat") {
         const note = document.createElement("p");
         note.style.cssText = "font-size:0.75rem;color:var(--text-secondary);margin-top:4px;";
-        note.textContent = "ℹ️ Lobul urechii nu poate fi determinat automat; celelalte caracteristici sunt estimate.";
+        note.textContent = "Lobul urechii nu poate fi determinat automat; celelalte caracteristici sunt estimate.";
         urechiFields.push(note);
     }
-    grid.appendChild(createCard("👂", "Urechile", urechiFields));
+    grid.appendChild(createCard("Urechile", urechiFields));
 
     // Card vârstă
-    grid.appendChild(createCard("🎂", "Vârsta estimată", [
+    grid.appendChild(createCard("Vârsta estimată", [
         makeTextValue("Interval", results.varsta || "Nedeterminată")
     ]));
 
@@ -1014,13 +1011,13 @@ function renderResults(results) {
     semneInput.value = results.semneParticulare || "";
     semneContainer.appendChild(semneLabel);
     semneContainer.appendChild(semneInput);
-    grid.appendChild(createCard("⭐", "Semne particulare", [semneContainer]));
+    grid.appendChild(createCard("Semne particulare", [semneContainer]));
 
     const infoCard = document.createElement("div");
     infoCard.className = "result-card";
     infoCard.style.borderColor = "rgba(255,255,255,0.15)";
     infoCard.innerHTML = `
-        <div class="card-title"><span class="emoji">ℹ️</span> Fiabilitate</div>
+        <div class="card-title">Fiabilitate</div>
         <p style="font-size:0.8rem;color:var(--text-secondary);">
             Categoriile geometrice (tip față, gură, frunte, sprâncene) au fiabilitate ridicată.
             Culoarea ochilor/părului este aproximativă (sampling de culoare). Tipul nasului
@@ -1031,12 +1028,12 @@ function renderResults(results) {
     grid.appendChild(infoCard);
 }
 
-function createCard(emoji, title, fields) {
+function createCard(title, fields) {
     const card = document.createElement("div");
     card.className = "result-card";
     const titleEl = document.createElement("div");
     titleEl.className = "card-title";
-    titleEl.innerHTML = `<span class="emoji">${emoji}</span> ${title}`;
+    titleEl.textContent = title;
     card.appendChild(titleEl);
     fields.forEach(f => card.appendChild(f));
     return card;
@@ -1073,23 +1070,23 @@ function collectResultsFromUI() {
 // ============================================================
 function saveResults() {
     if (!currentResults) {
-        alert("❌ Nu există rezultate de salvat. Rulează mai întâi analiza.");
+        alert("Nu există rezultate de salvat. Rulează mai întâi analiza.");
         return;
     }
     const data = collectResultsFromUI();
     const key = "semnalmente:" + Date.now();
     try {
         localStorage.setItem(key, JSON.stringify(data));
-        alert("✅ Fișa a fost salvată în localStorage sub cheia: " + key);
+        alert("Fișa a fost salvată în localStorage sub cheia: " + key);
         renderSavedList();
     } catch (err) {
-        alert("❌ Eroare la salvare: " + err.message);
+        alert("Eroare la salvare: " + err.message);
     }
 }
 
 function exportResults() {
     if (!currentResults) {
-        alert("❌ Nu există rezultate de exportat.");
+        alert("Nu există rezultate de exportat.");
         return;
     }
     const data = collectResultsFromUI();
@@ -1135,10 +1132,10 @@ function renderSavedList() {
         const actions = document.createElement("div");
         actions.className = "saved-actions";
         const loadBtn = document.createElement("button");
-        loadBtn.textContent = "📂 Încarcă";
+        loadBtn.textContent = "Încarcă";
         loadBtn.addEventListener("click", () => loadSavedData(parsed));
         const delBtn = document.createElement("button");
-        delBtn.textContent = "🗑️ Șterge";
+        delBtn.textContent = "Șterge";
         delBtn.className = "delete";
         delBtn.addEventListener("click", () => {
             if (confirm("Șterge această fișă?")) {
@@ -1173,7 +1170,7 @@ function loadSavedData(data) {
     renderResults(data);
     document.getElementById("results-section").classList.add("visible");
     document.getElementById("status").className = "status info";
-    document.getElementById("status").textContent = "📂 Fișă încărcată. Rezultatele sunt afișate.";
+    document.getElementById("status").textContent = "Fișă încărcată. Rezultatele sunt afișate.";
 }
 
 // ============================================================
@@ -1214,12 +1211,12 @@ async function initApp() {
     document.getElementById("btn-reset").addEventListener("click", resetAll);
     try {
         await initFaceLandmarker();
-        console.log("🚀 Aplicație pregătită. Poți încărca imagini.");
+        console.log("Aplicație pregătită. Poți încărca imagini.");
     } catch (err) {
         console.error("Eroare la inițializarea MediaPipe:", err);
         document.getElementById("status").className = "status error";
         document.getElementById("status").textContent =
-            "⚠️ Eroare la încărcarea modelului MediaPipe. Verifică conexiunea la internet (CDN-urile trebuie să fie accesibile).";
+            "Eroare la încărcarea modelului MediaPipe. Verifică conexiunea la internet (CDN-urile trebuie să fie accesibile).";
     }
 }
 
