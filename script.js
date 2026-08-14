@@ -1,11 +1,23 @@
 // ============================================================
-// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v10, cu fix urechi)
+// APLICAȚIE DE ANALIZĂ FACIALĂ – script.js (v11, debugging)
 // ============================================================
-// Modificări:
-// - detectEars are acum fallback geometric care returnează
-//   formă și mărime estimate chiar dacă OpenCV.js lipsește.
-// - Lobul urechii rămâne „Nedeterminat” (nu poate fi dedus
-//   fără analiză de imagine detaliată).
+// Modificări față de v10:
+// - FIX critic: currentResults se resetează la începutul fiecărei
+//   analize, ca să nu mai poată fi salvate/exportate rezultate
+//   vechi (atribuite altei poze) după o analiză eșuată.
+// - FIX: lobul urechii rămâne mereu "Nedeterminat", inclusiv pe
+//   ramura OpenCV (înainte contrazicea propriul design: dădea o
+//   presupunere nesigură fără avertismentul aferent în UI).
+// - FIX: loadOpenCV() nu mai injectează <script> duplicat la
+//   fiecare încercare eșuată — promisiunea de încărcare e cache-uită.
+// - FIX: cv.Mat-urile din detectEars/estimateAge sunt eliberate în
+//   try/finally, nu mai există leak de memorie WASM la erori.
+// - FIX: ramură moartă (unreachable) în classifyColor — verificarea
+//   pentru "Cărunt" era umbrită complet de cea pentru "Blond".
+// - FIX: purgeImageData nu mai setează img.src = "" (poate declanșa
+//   o cerere către URL-ul curent al paginii) — folosește removeAttribute.
+// - FIX: gol de clasificare în classifyFaceType pentru foreheadRatio
+//   între 0.80 și 0.85 (cădea implicit în "Romboidă").
 // ============================================================
 
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
@@ -24,6 +36,7 @@ let objectUrls = [];
 let frontalFile = null;
 let profilFile = null;
 let opencvReady = false;
+let openCvLoadPromise = null; // cache-uim promisiunea ca sa nu injectam <script> de mai multe ori
 
 // ============================================================
 // INDICI LANDMARK-URI MEDIAPIPE FACE MESH (esențiali)
@@ -116,9 +129,12 @@ function classifyColor(r, g, b) {
     if (l < 20) return "Negru";
     if (l < 30 && s < 30) return "Negru";
     if (l < 60 && s < 35) return "Șaten";
+    // "Cărunt" trebuie verificat ÎNAINTE de "Blond": condiția lui e un
+    // subset strict a celei pentru Blond (l>75,s<15 ⊂ l>70,s<20), deci
+    // dacă rămâne după, nu se mai atinge niciodată (bug corectat).
+    if (l > 75 && s < 15) return "Cărunt";
     if (l > 70 && s < 20) return "Blond";
     if (h < 20 && s > 25) return "Roșcat";
-    if (l > 75 && s < 15) return "Cărunt";
     if (h < 45) return "Blond";
     if (h < 80) return "Șaten";
     return "Negru";
@@ -185,33 +201,46 @@ function getSideLandmarks(landmarks, side) {
 }
 
 // ============================================================
-// ÎNCĂRCARE DINAMICĂ OPENCV.JS
+// ÎNCĂRCARE DINAMICĂ OPENCV.JS (cu promisiune cache-uită)
 // ============================================================
 function loadOpenCV() {
-    return new Promise((resolve, reject) => {
-        if (opencvReady && window.cv && window.cv.Mat) {
-            resolve();
+    if (opencvReady && window.cv && window.cv.Mat) {
+        return Promise.resolve();
+    }
+    // Dacă o încărcare e deja în curs (sau a reușit deja), o refolosim
+    // în loc să injectăm alt <script> — evită descărcări duplicate.
+    if (openCvLoadPromise) {
+        return openCvLoadPromise;
+    }
+
+    openCvLoadPromise = new Promise((resolve, reject) => {
+        const waitForReady = () => {
+            if (window.cv && window.cv.Mat) {
+                opencvReady = true;
+                resolve();
+            } else {
+                setTimeout(waitForReady, 100);
+            }
+        };
+
+        const existing = document.querySelector(`script[src="${OPENCV_URL}"]`);
+        if (existing) {
+            waitForReady();
             return;
         }
+
         const script = document.createElement("script");
         script.src = OPENCV_URL;
         script.async = true;
-        script.onload = () => {
-            const checkReady = () => {
-                if (window.cv && window.cv.Mat) {
-                    opencvReady = true;
-                    resolve();
-                } else {
-                    setTimeout(checkReady, 100);
-                }
-            };
-            checkReady();
-        };
+        script.onload = waitForReady;
         script.onerror = () => {
+            openCvLoadPromise = null; // permite reîncercarea la un apel viitor
             reject(new Error("Nu s-a putut încărca OpenCV.js."));
         };
         document.head.appendChild(script);
     });
+
+    return openCvLoadPromise;
 }
 
 // ============================================================
@@ -364,7 +393,9 @@ function purgeImageData(imageData) {
             if (ctx) ctx.clearRect(0, 0, imageData.canvas.width, imageData.canvas.height);
             imageData.canvas.width = 0; imageData.canvas.height = 0;
         }
-        if (imageData.image) imageData.image.src = "";
+        // NU folosim image.src = "" — un string gol se rezolvă la URL-ul
+        // documentului curent și poate declanșa o cerere nedorită.
+        if (imageData.image) imageData.image.removeAttribute("src");
         if (imageData.objectUrl) {
             URL.revokeObjectURL(imageData.objectUrl);
             objectUrls = objectUrls.filter((u) => u !== imageData.objectUrl);
@@ -400,8 +431,10 @@ function classifyFaceType(landmarks) {
     const faceH = distance(landmarks[LM.HAIRLINE_CENTER], landmarks[LM.CHIN]);
     const ratio = faceH / cheekboneW, jawRatio = jawW / cheekboneW, foreheadRatio = foreheadW / cheekboneW;
     let tip;
-    if (ratio > 1.45 && jawRatio < 0.75 && foreheadRatio > 0.85) tip = "Triunghiulară";
-    else if (ratio > 1.45 && jawRatio < 0.75 && foreheadRatio < 0.80) tip = "Ascuțită";
+    // Fost gol de clasificare pentru foreheadRatio intre 0.80 si 0.85
+    // (nici Triunghiulara, nici Ascutita nu se potriveau) -> acum un
+    // singur prag de separatie, fara zona nedefinita.
+    if (ratio > 1.45 && jawRatio < 0.75) tip = foreheadRatio > 0.82 ? "Triunghiulară" : "Ascuțită";
     else if (ratio > 1.35 && foreheadRatio > 0.88 && jawRatio > 0.82) tip = "Dreptunghiulară";
     else if (ratio > 1.25 && foreheadRatio < 0.85 && jawRatio < 0.80 && cheekboneW > foreheadW && cheekboneW > jawW) tip = "Romboidă";
     else if (ratio > 1.25) tip = "Ovală";
@@ -428,6 +461,7 @@ function classifyEyes(landmarks, canvas, ctx, faceWidth) {
         if (culoare === "Șaten") culoare = "Căprui";
         else if (culoare === "Blond") culoare = "Albaștri";
         else if (culoare === "Roșcat") culoare = "Căprui";
+        else if (culoare === "Cărunt") culoare = "Albaștri";
     }
     return { culoare, marime, raportOchi: eyeRatio.toFixed(2) };
 }
@@ -605,6 +639,10 @@ function classifyBeardAndMustache(landmarks, canvas, ctx) {
 // ============================================================
 // DETECȚIA URECHEI – CU FALLBACK GEOMETRIC
 // ============================================================
+// NOTĂ: lobul urechii rămâne întotdeauna "Nedeterminat", indiferent
+// de ramură (geometrică sau OpenCV) — nu poate fi dedus fiabil doar
+// din contur/landmark-uri, iar afișarea unei presupuneri ca fapt cert
+// ar induce în eroare utilizatorul.
 function geometricEarEstimate(profileLandmarks, faceHeight) {
     const side = detectProfileSide(profileLandmarks);
     const { temple, jaw, cheekbone } = getSideLandmarks(profileLandmarks, side);
@@ -633,13 +671,14 @@ function geometricEarEstimate(profileLandmarks, faceHeight) {
     else if (relativeHeight > 0.32) marime = "Mari";
     else marime = "Medii";
 
-    // Lobul nu poate fi determinat geometric
     return { forma, marime, lob: "Nedeterminat" };
 }
 
 async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHeight) {
     // Dacă OpenCV este disponibil, încercăm detecția pe contururi
     if (window.cv && opencvReady) {
+        let src = null, gray = null, edges = null, contours = null, hierarchy = null;
+        const extractedMats = [];
         try {
             const canvas = profileImageData.canvas;
             const side = detectProfileSide(profileLandmarks);
@@ -665,16 +704,17 @@ async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHei
                     roiCanvas.height = roiHeight;
                     const roiCtx = roiCanvas.getContext("2d");
                     roiCtx.drawImage(canvas, pxLeft, pxTop, roiWidth, roiHeight, 0, 0, roiWidth, roiHeight);
-                    const src = cv.imread(roiCanvas);
-                    const gray = new cv.Mat();
+
+                    src = cv.imread(roiCanvas);
+                    gray = new cv.Mat();
                     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
                     cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
-                    const edges = new cv.Mat();
+                    edges = new cv.Mat();
                     cv.Canny(gray, edges, 50, 150);
-                    const contours = new cv.MatVector();
-                    const hierarchy = new cv.Mat();
+                    contours = new cv.MatVector();
+                    hierarchy = new cv.Mat();
                     cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-                    const extractedMats = [];
+
                     let bestContour = null;
                     let maxArea = 0;
                     for (let i = 0; i < contours.size(); i++) {
@@ -686,6 +726,7 @@ async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHei
                             bestContour = contour;
                         }
                     }
+
                     if (bestContour) {
                         const rect = cv.boundingRect(bestContour);
                         const aspectRatio = rect.height / rect.width;
@@ -699,24 +740,24 @@ async function detectEars(profileImageData, profileLandmarks, faceWidth, faceHei
                         if (relativeHeight < 0.22) marime = "Mici";
                         else if (relativeHeight > 0.32) marime = "Mari";
                         else marime = "Medii";
-                        let lob = "Atașat";
-                        const roiLowerY = roiHeight * 0.6;
-                        let lowerContourCount = 0;
-                        for (const c of extractedMats) {
-                            const r = cv.boundingRect(c);
-                            if (r.y > roiLowerY && r.height > roiHeight * 0.1) lowerContourCount++;
-                        }
-                        lob = lowerContourCount > 1 ? "Liber" : "Atașat";
-                        for (const mat of extractedMats) mat.delete();
-                        src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
-                        return { forma, marime, lob };
+                        // Lobul NU se mai deduce dintr-o euristică de contururi —
+                        // rămâne "Nedeterminat", consecvent cu restul aplicației.
+                        return { forma, marime, lob: "Nedeterminat" };
                     }
-                    for (const mat of extractedMats) mat.delete();
-                    src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
                 }
             }
         } catch (err) {
             console.warn("Eroare la detecția OpenCV a urechii, folosim fallback geometric:", err);
+        } finally {
+            // Cleanup necondiționat — inclusiv dacă a fost aruncată o eroare
+            // la mijlocul procesării — ca să nu rămână Mat-uri nealocate
+            // în heap-ul WASM (leak la rulări repetate cu erori).
+            for (const mat of extractedMats) mat.delete();
+            if (src) src.delete();
+            if (gray) gray.delete();
+            if (edges) edges.delete();
+            if (contours) contours.delete();
+            if (hierarchy) hierarchy.delete();
         }
     }
     // Fallback geometric dacă OpenCV nu este disponibil sau conturul nu a fost găsit
@@ -760,15 +801,24 @@ function estimateAge(landmarks, canvas, ctx, hairResult) {
                 roiCanvas.width = w;
                 roiCanvas.height = h;
                 roiCanvas.getContext("2d").drawImage(canvas, x, y, w, h, 0, 0, w, h);
-                const src = cv.imread(roiCanvas);
-                const gray = new cv.Mat();
-                cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-                cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
-                const edges = new cv.Mat();
-                cv.Canny(gray, edges, 50, 150);
-                totalEdges += cv.countNonZero(edges);
-                totalPixels += w * h;
-                src.delete(); gray.delete(); edges.delete();
+
+                let src = null, gray = null, edges = null;
+                try {
+                    src = cv.imread(roiCanvas);
+                    gray = new cv.Mat();
+                    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+                    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+                    edges = new cv.Mat();
+                    cv.Canny(gray, edges, 50, 150);
+                    totalEdges += cv.countNonZero(edges);
+                    totalPixels += w * h;
+                } finally {
+                    // Cleanup necondiționat per regiune, chiar dacă una din
+                    // operațiile OpenCV aruncă eroare la mijlocul buclei.
+                    if (src) src.delete();
+                    if (gray) gray.delete();
+                    if (edges) edges.delete();
+                }
             }
             if (totalPixels > 0) {
                 const edgeDensity = totalEdges / totalPixels;
@@ -794,6 +844,14 @@ async function runAnalysis() {
     btn.disabled = true;
     document.getElementById("analyze-spinner").style.display = "inline-block";
     document.getElementById("analyze-text").textContent = "Se analizează...";
+
+    // FIX critic: resetăm rezultatele vechi ÎNAINTE de a începe o analiză
+    // nouă. Altfel, dacă analiza curentă eșuează, currentResults ar rămâne
+    // cu datele unei poze anterioare — iar Salvează/Exportă le-ar scrie
+    // ca și cum ar aparține pozei curente, fără nicio avertizare.
+    currentResults = null;
+    document.getElementById("results-section").classList.remove("visible");
+
     let frontalProc = null, profilProc = null;
 
     try {
