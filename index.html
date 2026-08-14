@@ -20,39 +20,40 @@
 <body>
     <div class="container">
         <header>
-            <h1>Analiză Facială <span class="badge">SEMNALMENTE</span></h1>
+            <h1>🔍 Analiză Facială <span class="badge">SEMNALMENTE</span></h1>
             <p>Portret vorbit automat – bazat pe MediaPipe Face Mesh (468+ landmark-uri)</p>
         </header>
 
         <div class="privacy-note">
+            <span class="icon">🔒</span>
             <span><strong>100% local.</strong> Imaginile nu sunt stocate niciodată. Doar rezultatele text/JSON ale analizei sunt salvate în <code>localStorage</code>-ul browserului tău. Pixelii imaginilor sunt eliminați din memorie imediat după procesare.</span>
         </div>
 
         <div class="upload-grid">
             <!-- Zona upload față -->
             <div class="upload-zone" id="drop-frontal">
-                <span class="label">Fotografie din față</span>
+                <span class="label">📸 Fotografie din față</span>
                 <span class="hint">Click sau trage imaginea aici</span>
                 <label for="file-frontal" class="sr-only">Încarcă fotografia din față</label>
                 <input type="file" accept="image/*" id="file-frontal">
                 <img id="preview-frontal" alt="Preview față">
-                <button class="remove-btn" id="remove-frontal" title="Elimină" aria-label="Elimină fotografia din față">×</button>
+                <button class="remove-btn" id="remove-frontal" title="Elimină" aria-label="Elimină fotografia din față">✕</button>
             </div>
             <!-- Zona upload profil -->
             <div class="upload-zone" id="drop-profil">
-                <span class="label">Fotografie din profil</span>
+                <span class="label">📷 Fotografie din profil</span>
                 <span class="hint">Click sau trage imaginea aici (opțional, dar recomandat)</span>
                 <label for="file-profil" class="sr-only">Încarcă fotografia din profil</label>
                 <input type="file" accept="image/*" id="file-profil">
                 <img id="preview-profil" alt="Preview profil">
-                <button class="remove-btn" id="remove-profil" title="Elimină" aria-label="Elimină fotografia din profil">×</button>
+                <button class="remove-btn" id="remove-profil" title="Elimină" aria-label="Elimină fotografia din profil">✕</button>
             </div>
         </div>
 
         <div style="text-align: center;">
             <button class="btn btn-primary" id="btn-analyze" disabled>
                 <span class="spinner" id="analyze-spinner" style="display:none;"></span>
-                <span id="analyze-text">Analizează fețele</span>
+                <span id="analyze-text">🔬 Analizează fețele</span>
             </button>
         </div>
 
@@ -63,9 +64,9 @@
                 <!-- Cardurile sunt generate dinamic -->
             </div>
             <div class="btn-group">
-                <button class="btn btn-success" id="btn-save">Salvează fișa</button>
-                <button class="btn btn-export" id="btn-export">Exportă JSON</button>
-                <button class="btn btn-secondary" id="btn-reset">Resetează tot</button>
+                <button class="btn btn-success" id="btn-save">💾 Salvează fișa</button>
+                <button class="btn btn-export" id="btn-export">📥 Exportă JSON</button>
+                <button class="btn btn-secondary" id="btn-reset">🔄 Resetează tot</button>
             </div>
         </div>
 
@@ -73,12 +74,12 @@
              astfel încât utilizatorul să poată vedea și încărca fișe salvate
              anterior chiar dacă nu a rulat încă o analiză în sesiunea curentă. -->
         <div class="saved-list" id="saved-list">
-            <h3>Fișe salvate anterior</h3>
+            <h3>📋 Fișe salvate anterior</h3>
             <div id="saved-items"></div>
         </div>
 
         <footer>
-            <p>&copy; <span id="current-year"></span> <a href="https://wa.me/alin.talfes" target="_blank" rel="noopener noreferrer">Alin Talfeș</a></p>
+            <p>&copy; <span id="current-year"></span> Alin Talfeș – <a href="https://wa.me/alin.talfes" target="_blank" rel="noopener noreferrer">Contact pe WhatsApp</a></p>
             <p>Versiune: <span id="app-version">Încărcare...</span></p>
         </footer>
     </div>
